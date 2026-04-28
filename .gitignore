@@ -1,0 +1,120 @@
+# ============================================
+# macOS
+# ============================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ============================================
+# IDE / Editors
+# ============================================
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.windsurf/
+.cursor/
+
+# ============================================
+# Flutter / Dart
+# ============================================
+health_coaching_app/.dart_tool/
+health_coaching_app/.flutter-plugins
+health_coaching_app/.flutter-plugins-dependencies
+health_coaching_app/.packages
+health_coaching_app/.pub-cache/
+health_coaching_app/.pub/
+health_coaching_app/build/
+health_coaching_app/.metadata
+health_coaching_app/pubspec.lock
+
+# Flutter generated
+**/generated_plugin_registrant.dart
+**/GeneratedPluginRegistrant.*
+
+# ============================================
+# iOS
+# ============================================
+health_coaching_app/ios/Pods/
+health_coaching_app/ios/.symlinks/
+health_coaching_app/ios/Flutter/Flutter.framework
+health_coaching_app/ios/Flutter/Flutter.podspec
+health_coaching_app/ios/Flutter/flutter_export_environment.sh
+health_coaching_app/ios/Flutter/Generated.xcconfig
+health_coaching_app/ios/Flutter/App.framework
+health_coaching_app/ios/Flutter/ephemeral/
+health_coaching_app/ios/Runner/GeneratedPluginRegistrant.*
+health_coaching_app/ios/build/
+health_coaching_app/ios/.generated/
+health_coaching_app/ios/ServiceDefinitions.json
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/DerivedData/
+
+# ============================================
+# Android
+# ============================================
+health_coaching_app/android/.gradle/
+health_coaching_app/android/captures/
+health_coaching_app/android/gradlew
+health_coaching_app/android/gradlew.bat
+health_coaching_app/android/local.properties
+health_coaching_app/android/**/GeneratedPluginRegistrant.java
+health_coaching_app/android/key.properties
+*.jks
+*.keystore
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+.env
+.env.local
+.env.*.local
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ============================================
+# Secrets / API Keys
+# ============================================
+*.pem
+*.key
+secrets.json
+config.local.*
+.env
+.env.*
+!.env.example
+
+# ============================================
+# Logs / Temp
+# ============================================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# ============================================
+# OS / Misc
+# ============================================
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,109 @@
+{
+  "document": {
+    "id": "0:0",
+    "name": "Page",
+    "type": "CANVAS",
+    "children": [
+      {
+        "id": "1:1",
+        "name": "Header",
+        "type": "FRAME",
+        "absoluteBoundingBox": { "x": 0, "y": 0, "width": 1440, "height": 120 },
+        "fills": [
+          { "type": "SOLID", "color": { "r": 0.953, "g": 0.705, "b": 0.705 } }
+        ],
+        "children": [
+          {
+            "id": "1:2",
+            "name": "HEADER",
+            "type": "TEXT",
+            "characters": "HEADER",
+            "style": {
+              "fontSize": 28,
+              "fontWeight": 700,
+              "textAlignHorizontal": "CENTER",
+              "textAlignVertical": "CENTER"
+            }
+          }
+        ]
+      },
+      {
+        "id": "2:1",
+        "name": "ImageContainer",
+        "type": "FRAME",
+        "absoluteBoundingBox": { "x": 0, "y": 120, "width": 1440, "height": 580 },
+        "fills": [
+          { "type": "SOLID", "color": { "r": 0.835, "g": 0.945, "b": 0.77 } }
+        ],
+        "cornerRadius": 40,
+        "children": [
+          {
+            "id": "2:2",
+            "name": "IMAGE",
+            "type": "TEXT",
+            "characters": "IMAGE",
+            "style": {
+              "fontSize": 28,
+              "fontWeight": 600,
+              "textAlignHorizontal": "CENTER",
+              "textAlignVertical": "CENTER"
+            }
+          }
+        ]
+      },
+      {
+        "id": "3:1",
+        "name": "TextZone",
+        "type": "FRAME",
+        "absoluteBoundingBox": { "x": 0, "y": 700, "width": 1440, "height": 324 },
+        "fills": [
+          { "type": "SOLID", "color": { "r": 0.83, "g": 0.93, "b": 0.98 } }
+        ],
+        "children": [
+          {
+            "id": "3:2",
+            "name": "TEXT ZONE",
+            "type": "TEXT",
+            "characters": "TEXT ZONE",
+            "style": {
+              "fontSize": 24,
+              "fontWeight": 500,
+              "textAlignHorizontal": "CENTER",
+              "textAlignVertical": "CENTER"
+            }
+          }
+        ]
+      },
+      {
+        "id": "4:0",
+        "name": "Buttons",
+        "type": "FRAME",
+        "layoutMode": "VERTICAL",
+        "itemSpacing": 16,
+        "absoluteBoundingBox": { "x": 1160, "y": 740, "width": 220, "height": 120 },
+        "children": [
+          {
+            "id": "4:1",
+            "name": "Button1",
+            "type": "FRAME",
+            "absoluteBoundingBox": { "x": 1160, "y": 740, "width": 220, "height": 50 },
+            "cornerRadius": 20,
+            "fills": [
+              { "type": "SOLID", "color": { "r": 0.835, "g": 0.945, "b": 0.77 } }
+            ]
+          },
+          {
+            "id": "4:2",
+            "name": "Button2",
+            "type": "FRAME",
+            "absoluteBoundingBox": { "x": 1160, "y": 806, "width": 220, "height": 50 },
+            "cornerRadius": 20,
+            "fills": [
+              { "type": "SOLID", "color": { "r": 0.835, "g": 0.945, "b": 0.77 } }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

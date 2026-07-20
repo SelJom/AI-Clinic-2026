@@ -1,10 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../widgets/quick_suggestions.dart';
+import '../services/gemini_service.dart';
 
 /// AI Chat screen with modern interface inspired by ChatGPT/Claude
 class AIChatScreen extends StatefulWidget {
-  const AIChatScreen({super.key});
+  final int? steps;
+  final double? heartRate;
+  final Duration? sleepDuration;
+
+  const AIChatScreen({
+    super.key,
+    this.steps,
+    this.heartRate,
+    this.sleepDuration,
+  });
 
   @override
   State<AIChatScreen> createState() => _AIChatScreenState();
@@ -14,17 +24,50 @@ class _AIChatScreenState extends State<AIChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  final GeminiService _geminiService = GeminiService();
   bool _isTyping = false;
+  bool _isInitializing = true;
 
   @override
   void initState() {
     super.initState();
-    // Message de bienvenue
     _messages.add(ChatMessage(
-      text: "👋 Salut ! Je suis votre coach santé IA. Comment puis-je vous aider aujourd'hui ?",
+      text: "⏳ Connecting to AI coach...",
       isUser: false,
       timestamp: DateTime.now(),
     ));
+    _initializeGemini();
+  }
+
+  Future<void> _initializeGemini() async {
+    try {
+      await _geminiService.initialize(
+        steps: widget.steps,
+        heartRate: widget.heartRate,
+        sleepDuration: widget.sleepDuration,
+      );
+      if (mounted) {
+        setState(() {
+          _isInitializing = false;
+          _messages[0] = ChatMessage(
+            text: "👋 Hello! I'm your AI health coach, here to support you through your care journey. How can I help you today?",
+            isUser: false,
+            timestamp: DateTime.now(),
+          );
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isInitializing = false;
+          _messages[0] = ChatMessage(
+            text: "⚠️ Unable to connect to the AI service. Please check your connection and try again.",
+            isUser: false,
+            timestamp: DateTime.now(),
+          );
+        });
+      }
+    }
   }
 
   @override
@@ -34,8 +77,8 @@ class _AIChatScreenState extends State<AIChatScreen> {
     super.dispose();
   }
 
-  void _sendMessage() {
-    if (_messageController.text.trim().isEmpty) return;
+  Future<void> _sendMessage() async {
+    if (_messageController.text.trim().isEmpty || _isInitializing) return;
 
     final userMessage = ChatMessage(
       text: _messageController.text.trim(),
@@ -51,10 +94,35 @@ class _AIChatScreenState extends State<AIChatScreen> {
     _messageController.clear();
     _scrollToBottom();
 
-    // Simuler une réponse de l'IA
-    _simulateAIResponse(userMessage.text);
+    try {
+      final response = await _geminiService.sendMessage(userMessage.text);
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(
+            text: response,
+            isUser: false,
+            timestamp: DateTime.now(),
+          ));
+          _isTyping = false;
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(
+            text: "❌ Error: $e",
+            isUser: false,
+            timestamp: DateTime.now(),
+          ));
+          _isTyping = false;
+        });
+        _scrollToBottom();
+      }
+    }
   }
 
+  // ignore: unused_element
   void _simulateAIResponse(String userMessage) {
     // Simulation d'une réponse contextuelle basée sur les données de santé
     Future.delayed(const Duration(seconds: 2), () {
@@ -163,7 +231,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
                 ),
               ),
               Text(
-                'En ligne',
+                'Online',
                 style: GoogleFonts.barlow(
                   color: const Color(0xFF38EF7D),
                   fontSize: 12,
@@ -199,9 +267,11 @@ class _AIChatScreenState extends State<AIChatScreen> {
               _sendMessage();
             },
             healthData: {
-              'steps': 8247,
-              'heartRate': 68.5,
-              'sleepHours': 7.75,
+              'steps': widget.steps ?? 0,
+              'heartRate': widget.heartRate ?? 0,
+              'sleepHours': widget.sleepDuration != null
+                  ? widget.sleepDuration!.inMinutes / 60.0
+                  : 0.0,
             },
           );
         }
@@ -384,7 +454,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
                     fontSize: 16,
                   ),
                   decoration: InputDecoration(
-                    hintText: 'Posez votre question santé...',
+                    hintText: 'Ask your health question...',
                     hintStyle: GoogleFonts.barlow(
                       color: const Color(0xFF8E8E93),
                       fontSize: 16,
@@ -397,13 +467,13 @@ class _AIChatScreenState extends State<AIChatScreen> {
                   ),
                   maxLines: null,
                   textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _sendMessage(),
+                  onSubmitted: (_) { _sendMessage(); },
                 ),
               ),
             ),
             const SizedBox(width: 12),
             GestureDetector(
-              onTap: _sendMessage,
+              onTap: () { _sendMessage(); },
               child: Container(
                 width: 44,
                 height: 44,
@@ -433,11 +503,11 @@ class _AIChatScreenState extends State<AIChatScreen> {
     final difference = now.difference(time);
     
     if (difference.inMinutes < 1) {
-      return 'À l\'instant';
+      return 'Just now';
     } else if (difference.inMinutes < 60) {
-      return 'Il y a ${difference.inMinutes}min';
+      return '${difference.inMinutes}min ago';
     } else if (difference.inHours < 24) {
-      return 'Il y a ${difference.inHours}h';
+      return '${difference.inHours}h ago';
     } else {
       return '${time.day}/${time.month} ${time.hour}:${time.minute.toString().padLeft(2, '0')}';
     }
@@ -470,13 +540,14 @@ class _AIChatScreenState extends State<AIChatScreen> {
             const SizedBox(height: 20),
             _buildOptionTile(
               icon: Icons.refresh,
-              title: 'Nouvelle conversation',
+              title: 'New conversation',
               onTap: () {
                 Navigator.pop(context);
+                _geminiService.resetChat();
                 setState(() {
                   _messages.clear();
                   _messages.add(ChatMessage(
-                    text: "👋 Nouvelle conversation ! Comment puis-je vous aider ?",
+                    text: "👋 New conversation! How can I help you?",
                     isUser: false,
                     timestamp: DateTime.now(),
                   ));
@@ -485,7 +556,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
             ),
             _buildOptionTile(
               icon: Icons.share,
-              title: 'Partager la conversation',
+              title: 'Share conversation',
               onTap: () {
                 Navigator.pop(context);
                 // Implémenter le partage
@@ -493,7 +564,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
             ),
             _buildOptionTile(
               icon: Icons.info_outline,
-              title: 'À propos du coach IA',
+              title: 'About AI Coach',
               onTap: () {
                 Navigator.pop(context);
                 _showAboutDialog();
@@ -531,14 +602,14 @@ class _AIChatScreenState extends State<AIChatScreen> {
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1C1C1E),
         title: Text(
-          'Coach IA Santé',
+          'AI Health Coach',
           style: GoogleFonts.barlow(
             color: Colors.white,
             fontWeight: FontWeight.bold,
           ),
         ),
         content: Text(
-          'Votre assistant personnel pour un mode de vie plus sain. Je vous aide avec des conseils sur l\'activité physique, le sommeil, la nutrition et le bien-être général.\n\n⚠️ Mes conseils ne remplacent pas un avis médical professionnel.',
+          'Your personal assistant for a healthier lifestyle. I provide guidance on physical activity, sleep, nutrition and general well-being.\n\n⚠️ My advice does not replace professional medical opinion.',
           style: GoogleFonts.barlow(
             color: const Color(0xFF8E8E93),
             height: 1.4,
@@ -548,7 +619,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text(
-              'Compris',
+              'Got it',
               style: GoogleFonts.barlow(
                 color: const Color(0xFF38EF7D),
                 fontWeight: FontWeight.w600,

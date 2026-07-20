@@ -41,6 +41,9 @@ dependencies:
   # Google Fonts for custom typography
   google_fonts: ^6.2.1
 
+  # HTTP client for Ollama local LLM API
+  http: ^1.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -62,6 +65,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/guidelines/esmo_guidelines.jsonl
 
   # To add assets to your application, add an assets section, like this:
   # assets:

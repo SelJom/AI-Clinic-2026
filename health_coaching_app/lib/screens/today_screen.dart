@@ -781,7 +781,11 @@ class _TodayScreenState extends State<TodayScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => const AIChatScreen(),
+                            builder: (context) => AIChatScreen(
+                              steps: _steps,
+                              heartRate: _restingHeartRate,
+                              sleepDuration: _sleepDuration,
+                            ),
                           ),
                         );
                       },

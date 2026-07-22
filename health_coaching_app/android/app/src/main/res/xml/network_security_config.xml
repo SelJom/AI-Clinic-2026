@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android blocks plain-HTTP (cleartext) traffic by default on API 28+. The
+  local health_coach backend (backend/health_coach/api.py) is HTTP-only by
+  design - it never leaves the device - so this narrowly allows cleartext
+  only to loopback and the Android-emulator's host-loopback alias, not to
+  the network at large.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../services/backend_service.dart';
 import '../widgets/quick_suggestions.dart';
 
 /// AI Chat screen with modern interface inspired by ChatGPT/Claude
 class AIChatScreen extends StatefulWidget {
-  const AIChatScreen({super.key});
+  final String patientId;
+  final Map<String, dynamic>? healthData;
+
+  const AIChatScreen({super.key, required this.patientId, this.healthData});
 
   @override
   State<AIChatScreen> createState() => _AIChatScreenState();
@@ -13,6 +17,7 @@ class AIChatScreen extends StatefulWidget {
 class _AIChatScreenState extends State<AIChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final BackendService _backendService = BackendService();
   final List<ChatMessage> _messages = [];
   bool _isTyping = false;
 
@@ -51,48 +56,31 @@ class _AIChatScreenState extends State<AIChatScreen> {
     _messageController.clear();
     _scrollToBottom();
 
-    // Simuler une réponse de l'IA
-    _simulateAIResponse(userMessage.text);
+    _fetchCoachReply(userMessage.text);
   }
 
-  void _simulateAIResponse(String userMessage) {
-    // Simulation d'une réponse contextuelle basée sur les données de santé
-    Future.delayed(const Duration(seconds: 2), () {
-      String response = _generateContextualResponse(userMessage);
-      
-      setState(() {
-        _messages.add(ChatMessage(
-          text: response,
-          isUser: false,
-          timestamp: DateTime.now(),
-        ));
-        _isTyping = false;
-      });
-      _scrollToBottom();
+  /// Calls the local guideline-grounded coach (backend/health_coach/api.py
+  /// `/chat`). If the backend isn't running, degrades to a message telling
+  /// the user how to start it rather than fabricating a reply.
+  Future<void> _fetchCoachReply(String message) async {
+    String reply;
+    try {
+      reply = await _backendService.chat(widget.patientId, message);
+    } on BackendUnavailableException {
+      reply = "I can't reach the local coaching service right now. On your "
+          'dev machine, run:\npython -m health_coach.cli serve';
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _messages.add(ChatMessage(
+        text: reply,
+        isUser: false,
+        timestamp: DateTime.now(),
+      ));
+      _isTyping = false;
     });
-  }
-
-  String _generateContextualResponse(String userMessage) {
-    final message = userMessage.toLowerCase();
-    
-    if (message.contains('pas') || message.contains('marche') || message.contains('activité')) {
-      return "🚶‍♂️ Avec vos 8,247 pas aujourd'hui, vous êtes sur la bonne voie ! L'OMS recommande 10,000 pas par jour. Voici quelques conseils pour augmenter votre activité :\n\n• Prenez les escaliers au lieu de l'ascenseur\n• Marchez pendant vos appels téléphoniques\n• Garez-vous plus loin de votre destination\n\nVoulez-vous que je vous propose un plan d'activité personnalisé ?";
-    }
-    
-    if (message.contains('sommeil') || message.contains('dormir') || message.contains('fatigue')) {
-      return "😴 Votre sommeil de 7h45 est excellent ! C'est dans la fourchette optimale de 7-9h. Pour maintenir cette qualité :\n\n• Gardez des horaires réguliers\n• Évitez les écrans 1h avant le coucher\n• Maintenez votre chambre fraîche (18-20°C)\n\nAvez-vous des difficultés particulières avec votre sommeil ?";
-    }
-    
-    if (message.contains('cœur') || message.contains('cardiaque') || message.contains('rythme')) {
-      return "❤️ Votre fréquence cardiaque au repos de 68.5 bpm est excellente ! C'est le signe d'une bonne condition cardiovasculaire.\n\n**Plages normales :**\n• Excellente : 60-69 bpm\n• Bonne : 70-79 bpm\n• Moyenne : 80-89 bpm\n\nPour maintenir cette santé cardiaque, continuez votre activité physique régulière !";
-    }
-    
-    if (message.contains('nutrition') || message.contains('manger') || message.contains('alimentation')) {
-      return "🥗 Une bonne nutrition complète parfaitement votre activité physique ! Voici mes recommandations :\n\n**Bases d'une alimentation saine :**\n• 5 portions de fruits et légumes/jour\n• Protéines à chaque repas\n• Hydratation : 1.5-2L d'eau/jour\n• Limiter les aliments ultra-transformés\n\nVoulez-vous des suggestions de repas adaptés à votre niveau d'activité ?";
-    }
-    
-    // Réponse générale
-    return "🤖 Je suis là pour vous accompagner dans votre parcours santé ! Basé sur vos données actuelles :\n\n📊 **Votre bilan :**\n• Activité : Très bonne (8,247 pas)\n• Sommeil : Excellent (7h45)\n• Rythme cardiaque : Optimal (68.5 bpm)\n\nVous pouvez me poser des questions sur :\n• Conseils d'activité physique\n• Optimisation du sommeil\n• Nutrition et hydratation\n• Gestion du stress\n\nQue souhaitez-vous améliorer en priorité ?";
+    _scrollToBottom();
   }
 
   void _scrollToBottom() {
@@ -198,11 +186,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
               _messageController.text = suggestion;
               _sendMessage();
             },
-            healthData: {
-              'steps': 8247,
-              'heartRate': 68.5,
-              'sleepHours': 7.75,
-            },
+            healthData: widget.healthData,
           );
         }
         return _buildMessageBubble(_messages[index]);

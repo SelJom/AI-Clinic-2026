@@ -1,12 +1,23 @@
+import 'dart:io' show Platform;
 import 'package:health/health.dart';
-import 'dart:math';
 
-/// Service class responsible for managing health data access and permissions
-/// Handles HealthKit (iOS) and Health Connect (Android) integration
+/// Service class responsible for managing health data access and permissions.
+/// Handles HealthKit (iOS) and Health Connect (Android) integration.
+///
+/// IMPORTANT: the `health` package (v13+) removed its singleton pattern -
+/// `Health()` is a plain constructor that returns a *new* instance every
+/// call, and the docs require `configure()` to be called once before the
+/// plugin is used at all. The previous version of this file called
+/// `Health()` fresh in every method and never called `configure()` -
+/// this rewrite fixes both by keeping one instance (`_health`) for the
+/// lifetime of this singleton service, configured lazily on first use.
 class HealthService {
   static final HealthService _instance = HealthService._internal();
   factory HealthService() => _instance;
   HealthService._internal();
+
+  final Health _health = Health();
+  bool _configured = false;
 
   /// Health data types we need for the app
   static const List<HealthDataType> _dataTypes = [
@@ -22,165 +33,143 @@ class HealthService {
     HealthDataAccess.READ,
   ];
 
-  /// Request permissions for health data access (safe version)
-  /// Returns true if permissions are granted, false otherwise
+  /// Health Connect / HealthKit only exist on Android/iOS. Desktop builds
+  /// (this app also targets desktop, see README) have no such concept, so
+  /// treat them as "always simulated" rather than letting the plugin fail.
+  bool get _platformSupportsHealthData => Platform.isAndroid || Platform.isIOS;
+
+  Future<void> _ensureConfigured() async {
+    if (_configured) return;
+    await _health.configure();
+    _configured = true;
+  }
+
+  /// Checks current permission status without prompting the user.
   Future<bool> requestPermissions() async {
+    if (!_platformSupportsHealthData) return false;
     try {
-      print('🔐 Checking health data availability...');
-      
-      // First check if HealthKit is available
-      bool isAvailable = await Health().isDataTypeAvailable(HealthDataType.STEPS);
-      if (!isAvailable) {
-        print('📱 HealthKit not available on this device');
-        return false;
-      }
-      
-      // Check if we already have permissions (safe check)
-      bool? hasPermissions = await Health().hasPermissions(_dataTypes);
-      print('📋 Current permissions status: $hasPermissions');
-      
-      if (hasPermissions == true) {
-        print('✅ Permissions already granted!');
-        return true;
-      }
-      
-      // Don't request permissions to avoid crashes - just return false
-      // The _shouldUseSimulatedData method will try to fetch data anyway
-      print('📱 No explicit permissions - will try to fetch data directly');
-      
-      return false;
+      await _ensureConfigured();
+      bool? hasPermissions = await _health.hasPermissions(_dataTypes, permissions: _permissions);
+      return hasPermissions ?? false;
     } catch (e) {
-      print('❌ Error checking health permissions: $e');
+      print('Error checking health permissions: $e');
       return false;
     }
   }
 
-  /// Request permissions for real device (call this manually when needed)
+  /// Shows the OS permission dialog (Health Connect consent screen /
+  /// HealthKit authorization sheet) and returns whether permission was
+  /// actually granted afterwards.
   Future<bool> requestPermissionsForRealDevice() async {
+    if (!_platformSupportsHealthData) return false;
     try {
-      print('🔐 Requesting health data permissions for real device...');
-      
-      // Request authorization for the data types we need with proper permissions
-      print('📱 Showing permission dialog...');
-      bool requested = await Health().requestAuthorization(_dataTypes, permissions: _permissions);
-      print('🔄 Health authorization requested: $requested');
-      
-      // Check if permissions are actually granted after request
-      bool? hasPermissions = await Health().hasPermissions(_dataTypes);
-      print('✅ Health permissions after request: $hasPermissions');
-      
+      await _ensureConfigured();
+      await _health.requestAuthorization(_dataTypes, permissions: _permissions);
+      bool? hasPermissions = await _health.hasPermissions(_dataTypes, permissions: _permissions);
       return hasPermissions ?? false;
     } catch (e) {
-      print('❌ Error requesting health permissions: $e');
+      print('Error requesting health permissions: $e');
       return false;
+    }
+  }
+
+  /// Whether real device reads should be attempted at all: wrong platform,
+  /// the plugin failing to configure, or no granted permission all fall
+  /// back to simulated data rather than surfacing an error to the user -
+  /// this is a health-coaching demo, not a diagnostic tool, so a graceful
+  /// fallback is preferable to a crash or a blank screen.
+  Future<bool> _shouldUseSimulatedData() async {
+    if (!_platformSupportsHealthData) return true;
+    try {
+      await _ensureConfigured();
+      if (!_health.isDataTypeAvailable(HealthDataType.STEPS)) return true;
+
+      bool? hasPermissions = await _health.hasPermissions(_dataTypes, permissions: _permissions);
+      if (hasPermissions == true) return false;
+
+      // First run on this device: ask once. If the user declines, every
+      // subsequent call keeps falling back to simulated data (hasPermissions
+      // will keep returning false/null) rather than re-prompting each time.
+      bool granted = await requestPermissionsForRealDevice();
+      return !granted;
+    } catch (e) {
+      print('Error determining health data availability: $e');
+      return true;
     }
   }
 
   /// Get steps count for today
   Future<int?> getSteps() async {
     try {
-      print('🚶 Fetching steps data...');
-      
-      // Check if we should use simulated data
       bool useSimulated = await _shouldUseSimulatedData();
       if (useSimulated) {
-        print('📱 Using simulated steps data');
         return _getSimulatedSteps();
       }
-      
-      print('🏥 Attempting to fetch real HealthKit data...');
-      
+
       final now = DateTime.now();
       final startOfDay = DateTime(now.year, now.month, now.day);
-      
-      print('📅 Fetching steps from ${startOfDay.toString()} to ${now.toString()}');
-      
-      List<HealthDataPoint> healthData = await Health().getHealthDataFromTypes(
+
+      List<HealthDataPoint> healthData = await _health.getHealthDataFromTypes(
         types: [HealthDataType.STEPS],
         startTime: startOfDay,
         endTime: now,
       );
-      
-      print('📊 Retrieved ${healthData.length} step data points from HealthKit');
-      
+
       if (healthData.isNotEmpty) {
-        // Sum all step counts for today
         int totalSteps = 0;
         for (var point in healthData) {
           if (point.value is NumericHealthValue) {
-            int stepValue = (point.value as NumericHealthValue).numericValue.toInt();
-            totalSteps += stepValue;
-            print('📈 Step data point: $stepValue steps at ${point.dateFrom}');
+            totalSteps += (point.value as NumericHealthValue).numericValue.toInt();
           }
         }
-        print('✅ Total steps calculated from HealthKit: $totalSteps');
         return totalSteps;
       }
-      
-      print('❌ No step data found in HealthKit - returning 0');
-      return 0; // Return 0 instead of null to show that we tried but found no data
+
+      return 0; // Tried, found no data for today yet.
     } catch (e) {
-      print('❌ Error fetching steps from HealthKit: $e');
-      print('🔄 Falling back to simulated data');
-      return _getSimulatedSteps(); // Fallback to simulated data
+      print('Error fetching steps from Health Connect/HealthKit: $e');
+      return _getSimulatedSteps();
     }
   }
 
   /// Generate realistic demo steps data for presentation
   int _getSimulatedSteps() {
-    // Fixed impressive demo data for presentation
-    return 8247; // Looks like real daily activity
+    return 8247;
   }
 
   /// Generate realistic demo heart rate data for presentation
   double _getSimulatedHeartRate() {
-    // Fixed healthy demo data for presentation
-    return 68.5; // Perfect resting heart rate
+    return 68.5;
   }
 
   /// Generate realistic demo sleep duration for presentation
   double _getSimulatedSleepDuration() {
-    // Fixed optimal demo data for presentation
-    return 7.75; // 7h 45min - perfect sleep duration
+    return 7.75;
   }
-
-  /// Force demo mode for presentation
-  Future<bool> _shouldUseSimulatedData() async {
-    // Always use demo data for presentation
-    print('🎯 Using demo data for presentation');
-    return true;
-  }
-
 
   /// Get average resting heart rate (recent data)
-  /// Returns null if data is not available or permissions are not granted
   Future<double?> getRestingHeartRate() async {
     try {
-      // Check if we should use simulated data
       bool useSimulated = await _shouldUseSimulatedData();
       if (useSimulated) {
         return _getSimulatedHeartRate();
       }
-      
-      // Get resting heart rate data from the last 7 days for better average
+
       DateTime now = DateTime.now();
       DateTime weekAgo = now.subtract(const Duration(days: 7));
-      
-      List<HealthDataPoint> healthData = await Health().getHealthDataFromTypes(
+
+      List<HealthDataPoint> healthData = await _health.getHealthDataFromTypes(
         types: [HealthDataType.RESTING_HEART_RATE],
         startTime: weekAgo,
         endTime: now,
       );
 
       if (healthData.isEmpty) {
-        print('No resting heart rate data available');
         return null;
       }
 
-      // Calculate average resting heart rate
       double totalHeartRate = 0;
       int count = 0;
-      
       for (HealthDataPoint point in healthData) {
         if (point.value is NumericHealthValue) {
           totalHeartRate += (point.value as NumericHealthValue).numericValue;
@@ -189,73 +178,63 @@ class HealthService {
       }
 
       if (count == 0) return null;
-      
-      double averageHeartRate = totalHeartRate / count;
-      print('Retrieved average resting heart rate: $averageHeartRate bpm');
-      return averageHeartRate;
+      return totalHeartRate / count;
     } catch (e) {
       print('Error fetching resting heart rate data: $e');
-      return _getSimulatedHeartRate(); // Fallback to simulated data
+      return _getSimulatedHeartRate();
     }
   }
 
   /// Get last night's sleep duration
-  /// Returns null if data is not available or permissions are not granted
   Future<Duration?> getSleepDuration() async {
     try {
-      // Check if we should use simulated data
       bool useSimulated = await _shouldUseSimulatedData();
       if (useSimulated) {
         final hours = _getSimulatedSleepDuration();
         return Duration(minutes: (hours * 60).round());
       }
-      
-      // Get sleep data for last night (yesterday 6 PM to today 12 PM)
+
       DateTime now = DateTime.now();
       DateTime today6AM = DateTime(now.year, now.month, now.day, 6);
       DateTime yesterday6PM = today6AM.subtract(const Duration(hours: 12));
-      
-      // If it's early morning, we want the sleep from the night before
+
       if (now.hour < 12) {
         today6AM = today6AM.subtract(const Duration(days: 1));
         yesterday6PM = yesterday6PM.subtract(const Duration(days: 1));
       }
-      
-      List<HealthDataPoint> healthData = await Health().getHealthDataFromTypes(
+
+      List<HealthDataPoint> healthData = await _health.getHealthDataFromTypes(
         types: [HealthDataType.SLEEP_IN_BED],
         startTime: yesterday6PM,
-        endTime: today6AM.add(const Duration(hours: 6)), // Until noon
+        endTime: today6AM.add(const Duration(hours: 6)),
       );
 
       if (healthData.isEmpty) {
-        print('No sleep data available for last night');
         return null;
       }
 
-      // Calculate total sleep duration
       Duration totalSleep = Duration.zero;
-      
       for (HealthDataPoint point in healthData) {
         if (point.value is NumericHealthValue) {
-          // Sleep duration is typically in minutes
           int minutes = (point.value as NumericHealthValue).numericValue.toInt();
           totalSleep += Duration(minutes: minutes);
         }
       }
 
-      print('Retrieved sleep duration for last night: ${totalSleep.inHours}h ${totalSleep.inMinutes % 60}min');
       return totalSleep;
     } catch (e) {
       print('Error fetching sleep data: $e');
       final hours = _getSimulatedSleepDuration();
-      return Duration(minutes: (hours * 60).round()); // Fallback to simulated data
+      return Duration(minutes: (hours * 60).round());
     }
   }
 
   /// Check if health data is available on this device
   Future<bool> isHealthDataAvailable() async {
+    if (!_platformSupportsHealthData) return false;
     try {
-      return Health().isDataTypeAvailable(HealthDataType.STEPS);
+      await _ensureConfigured();
+      return _health.isDataTypeAvailable(HealthDataType.STEPS);
     } catch (e) {
       print('Error checking health data availability: $e');
       return false;

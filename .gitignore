@@ -19,6 +19,7 @@
 *~
 .windsurf/
 .cursor/
+.claude/
 
 # ============================================
 # Flutter / Dart
@@ -92,6 +93,13 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# ============================================
+# Local health data 
+# ============================================
+backend/data/*.db
+backend/data/*.sqlite*
+*.jsonl.bak
 
 # ============================================
 # Secrets / API Keys

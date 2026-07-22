@@ -37,9 +37,17 @@ dependencies:
   
   # Health package for reading health data from HealthKit (iOS) and Health Connect (Android)
   health: ^13.2.1
-  
+
   # Google Fonts for custom typography
   google_fonts: ^6.2.1
+
+  # HTTP client used to talk to the local Python backend (127.0.0.1:8765 only)
+  http: ^1.2.2
+
+  # Native share sheet, used to let the patient send/export an escalation
+  # summary to their care team (copy/paste or OS share targets) - nothing
+  # is transmitted by this app itself.
+  share_plus: ^10.1.4
 
 dev_dependencies:
   flutter_test:

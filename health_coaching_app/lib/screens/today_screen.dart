@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../services/backend_service.dart';
 import '../services/health_service.dart';
 import 'ai_chat_screen.dart';
+import 'escalation_screen.dart';
 
 /// Main screen displaying today's health metrics
 /// Shows steps, resting heart rate, and sleep duration with refresh capability
@@ -14,12 +16,21 @@ class TodayScreen extends StatefulWidget {
 
 class _TodayScreenState extends State<TodayScreen> {
   final HealthService _healthService = HealthService();
-  
+  final BackendService _backendService = BackendService();
+
+  // Single local user for this prototype - no accounts/auth yet, so the
+  // backend just needs a stable id to key baselines/history against.
+  static const String _patientId = 'local-user';
+
   // Health data state variables
   int? _steps;
   double? _restingHeartRate;
   Duration? _sleepDuration;
-  
+
+  // Backend coaching state
+  Map<String, dynamic>? _backendSummary;
+  bool _backendReachable = true;
+
   // UI state variables
   bool _isLoading = false;
   bool _hasPermissions = false;
@@ -77,6 +88,8 @@ class _TodayScreenState extends State<TodayScreen> {
         _restingHeartRate = results[1] as double?;
         _sleepDuration = results[2] as Duration?;
       });
+
+      await _syncWithBackend();
     } catch (e) {
       setState(() {
         _errorMessage = 'Error loading health data: $e';
@@ -84,6 +97,37 @@ class _TodayScreenState extends State<TodayScreen> {
     } finally {
       setState(() {
         _isLoading = false;
+      });
+    }
+  }
+
+  /// Sends today's metrics to the local backend and pulls back its
+  /// personalized risk assessment. Failures here are expected whenever
+  /// `python -m health_coach.cli serve` isn't running - they degrade to a
+  /// message in the AI Coach card rather than surfacing as a hard error,
+  /// since the raw health metrics above are still perfectly usable on
+  /// their own.
+  Future<void> _syncWithBackend() async {
+    if (_steps == null || _restingHeartRate == null || _sleepDuration == null) {
+      return;
+    }
+    try {
+      await _backendService.ingestToday(
+        patientId: _patientId,
+        steps: _steps!,
+        restingHeartRate: _restingHeartRate!,
+        sleepMinutes: _sleepDuration!.inMinutes,
+      );
+      final summary = await _backendService.getSummary(_patientId);
+      if (!mounted) return;
+      setState(() {
+        _backendSummary = summary;
+        _backendReachable = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _backendReachable = false;
       });
     }
   }
@@ -686,8 +730,58 @@ class _TodayScreenState extends State<TodayScreen> {
     return 'Just now';
   }
 
+  /// Risk level from the backend drives the card's tone: calm green when
+  /// normal, amber/red as it climbs toward escalation.
+  List<Color> _coachCardGradient() {
+    final riskLevel = _backendSummary?['risk_level'] as String?;
+    switch (riskLevel) {
+      case 'escalate':
+        return [const Color(0xFFFF6B6B), const Color(0xFFFF3B30)];
+      case 'elevated':
+        return [const Color(0xFFFF9F43), const Color(0xFFFF9500)];
+      case 'watch':
+        return [const Color(0xFFFFD93D), const Color(0xFFFFC107)];
+      default:
+        return [const Color(0xFF11998E), const Color(0xFF38EF7D)];
+    }
+  }
+
+  String _coachCardBadge() {
+    if (!_backendReachable) return 'Offline';
+    final riskLevel = _backendSummary?['risk_level'] as String?;
+    if (riskLevel == null) return 'Syncing';
+    return riskLevel.substring(0, 1).toUpperCase() + riskLevel.substring(1);
+  }
+
+  /// Replaces the old fixed "Great job today!" copy with the backend's
+  /// actual rule hits, or an honest status message if it isn't reachable.
+  String _coachInsightText() {
+    if (!_backendReachable) {
+      return "Can't reach the local coaching service right now. On your "
+          'dev machine, run:\npython -m health_coach.cli serve';
+    }
+    if (_backendSummary == null) {
+      return 'Syncing with your local coach...';
+    }
+    final hits = (_backendSummary!['hits'] as List?)?.cast<dynamic>() ?? [];
+    if (hits.isEmpty) {
+      return 'Your heart rate, sleep, and activity all look consistent '
+          'with your recent baseline. Keep up your routine.';
+    }
+    return hits.map((h) => '• $h').join('\n');
+  }
+
+  Map<String, dynamic> _currentHealthDataForChat() {
+    return {
+      'steps': _steps ?? 0,
+      'heartRate': _restingHeartRate ?? 0,
+      'sleepHours': _sleepDuration != null ? (_sleepDuration!.inMinutes / 60) : 0,
+    };
+  }
+
   /// Build AI Coach section
   Widget _buildAICoachSection() {
+    final gradientColors = _coachCardGradient();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -703,15 +797,15 @@ class _TodayScreenState extends State<TodayScreen> {
           width: double.infinity,
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFF11998E), Color(0xFF38EF7D)],
+            gradient: LinearGradient(
+              colors: gradientColors,
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             borderRadius: BorderRadius.circular(20),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF11998E).withValues(alpha: 0.3),
+                color: gradientColors.first.withValues(alpha: 0.3),
                 blurRadius: 20,
                 offset: const Offset(0, 8),
               ),
@@ -742,7 +836,7 @@ class _TodayScreenState extends State<TodayScreen> {
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      'Beta',
+                      _coachCardBadge(),
                       style: GoogleFonts.barlow(
                         color: Colors.white,
                         fontSize: 12,
@@ -764,7 +858,7 @@ class _TodayScreenState extends State<TodayScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Great job today! Your activity level is excellent with 8,247 steps. Your resting heart rate of 68 bpm shows good cardiovascular health. Keep up the consistent sleep schedule!',
+                _coachInsightText(),
                 style: GoogleFonts.barlow(
                   color: Colors.white.withValues(alpha: 0.9),
                   fontSize: 15,
@@ -781,7 +875,10 @@ class _TodayScreenState extends State<TodayScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => const AIChatScreen(),
+                            builder: (context) => AIChatScreen(
+                              patientId: _patientId,
+                              healthData: _currentHealthDataForChat(),
+                            ),
                           ),
                         );
                       },
@@ -819,30 +916,40 @@ class _TodayScreenState extends State<TodayScreen> {
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(
-                            Icons.trending_up_rounded,
-                            color: Color(0xFF11998E),
-                            size: 18,
+                    child: GestureDetector(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => EscalationScreen(patientId: _patientId),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'View Trends',
-                            style: GoogleFonts.barlow(
-                              color: const Color(0xFF11998E),
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.medical_services_rounded,
+                              color: Color(0xFF11998E),
+                              size: 18,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 8),
+                            Text(
+                              'Care Team',
+                              style: GoogleFonts.barlow(
+                                color: const Color(0xFF11998E),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

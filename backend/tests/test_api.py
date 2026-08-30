@@ -86,3 +86,33 @@ def test_health_endpoint_reports_llm_backend(client):
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
     assert resp.json()["llm_backend"] in ("ollama", "template")
+
+
+def test_cors_allows_loopback_origin_with_a_real_port(client):
+    """Regression test for a real bug found by actually running the Flutter
+    web build against this backend (not just unit-testing each side
+    separately): CORS allow_origins listed "http://127.0.0.1" with no port,
+    but real browsers always send the port in the Origin header (e.g.
+    "http://127.0.0.1:5050" for `flutter run -d web-server`), so it never
+    matched and every request was silently blocked - the app showed
+    "Offline" even with the backend actually running and reachable."""
+    resp = client.options(
+        "/ingest",
+        headers={
+            "Origin": "http://127.0.0.1:5050",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "http://127.0.0.1:5050"
+
+
+def test_cors_rejects_non_loopback_origin(client):
+    resp = client.options(
+        "/ingest",
+        headers={
+            "Origin": "http://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert "access-control-allow-origin" not in resp.headers

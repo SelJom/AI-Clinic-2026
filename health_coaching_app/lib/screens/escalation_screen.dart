@@ -57,7 +57,7 @@ class _EscalationScreenState extends State<EscalationScreen> {
   void _share() {
     final text = _summary?['text'] as String?;
     if (text == null) return;
-    SharePlus.instance.share(ShareParams(text: text, subject: 'Health coach escalation summary'));
+    Share.share(text, subject: 'Health coach escalation summary');
   }
 
   Color _riskColor(String? riskLevel) {

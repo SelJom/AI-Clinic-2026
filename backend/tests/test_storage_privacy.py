@@ -68,3 +68,24 @@ def test_delete_patient_data_is_idempotent(tmp_path):
     counts = storage.delete_patient_data("p1", db_path=db_path)
 
     assert all(n == 0 for n in counts.values())
+
+
+def test_load_recent_risk_assessments_returns_oldest_to_newest_within_window(tmp_path):
+    db_path = tmp_path / "test.db"
+    storage.init_db(db_path=db_path)
+    storage.save_risk_assessment(
+        RiskAssessment("p1", date(2026, 1, 1), RiskLevel.NORMAL), db_path=db_path
+    )
+    storage.save_risk_assessment(
+        RiskAssessment("p1", date(2026, 1, 2), RiskLevel.ESCALATE), db_path=db_path
+    )
+    storage.save_risk_assessment(
+        RiskAssessment("p1", date(2026, 1, 3), RiskLevel.NORMAL), db_path=db_path
+    )
+
+    result = storage.load_recent_risk_assessments(
+        "p1", before=date(2026, 1, 4), limit_days=14, db_path=db_path
+    )
+
+    assert [a.day for a in result] == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
+    assert result[1].level == RiskLevel.ESCALATE

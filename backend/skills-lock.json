@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "flutter-tester": {
+      "source": "Harishwarrior/flutter-claude-skills",
+      "sourceType": "github",
+      "skillPath": "flutter-tester/SKILL.md",
+      "computedHash": "fec8034c56773d641ba00d50e3acbeb1048d093be1070920382a1f73b767b113"
+    },
+    "owasp-mobile-security-checker": {
+      "source": "Harishwarrior/flutter-claude-skills",
+      "sourceType": "github",
+      "skillPath": "owasp-mobile-security-checker/SKILL.md",
+      "computedHash": "052bc967d2e1ee1a4857b7e367e5e981a45550d2aa9130f8f72c7182717c7f84"
+    }
+  }
+}

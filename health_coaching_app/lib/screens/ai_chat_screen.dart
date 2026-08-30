@@ -8,7 +8,18 @@ class AIChatScreen extends StatefulWidget {
   final String patientId;
   final Map<String, dynamic>? healthData;
 
-  const AIChatScreen({super.key, required this.patientId, this.healthData});
+  /// True when shown as an always-visible side panel (see home_shell.dart's
+  /// wide-screen layout) rather than pushed onto the navigation stack -
+  /// drops the Scaffold/AppBar and back button, since there's no pushed
+  /// route to pop back to and no need to hide the rest of the app to see it.
+  final bool embedded;
+
+  const AIChatScreen({
+    super.key,
+    required this.patientId,
+    this.healthData,
+    this.embedded = false,
+  });
 
   @override
   State<AIChatScreen> createState() => _AIChatScreenState();
@@ -24,9 +35,9 @@ class _AIChatScreenState extends State<AIChatScreen> {
   @override
   void initState() {
     super.initState();
-    // Message de bienvenue
+    // Welcome message
     _messages.add(ChatMessage(
-      text: "👋 Salut ! Je suis votre coach santé IA. Comment puis-je vous aider aujourd'hui ?",
+      text: "👋 Hi! I'm your AI health coach. How can I help you today?",
       isUser: false,
       timestamp: DateTime.now(),
     ));
@@ -97,6 +108,21 @@ class _AIChatScreenState extends State<AIChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.embedded) {
+      // No Scaffold/AppBar/back button: this is a permanent panel next to
+      // TodayScreen, not a pushed route - there's nothing to pop back to,
+      // and the whole point is that the rest of the app stays visible.
+      return Container(
+        color: const Color(0xFF000000),
+        child: Column(
+          children: [
+            _buildEmbeddedHeader(),
+            Expanded(child: _buildMessagesList()),
+            _buildInputArea(),
+          ],
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: const Color(0xFF000000),
       appBar: _buildAppBar(),
@@ -107,6 +133,50 @@ class _AIChatScreenState extends State<AIChatScreen> {
           ),
           _buildInputArea(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildEmbeddedHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1C1C1E),
+        border: Border(bottom: BorderSide(color: Color(0xFF2C2C2E), width: 1)),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF11998E), Color(0xFF38EF7D)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'AI Health Coach',
+                  style: GoogleFonts.barlow(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  'Online',
+                  style: GoogleFonts.barlow(color: const Color(0xFF38EF7D), fontSize: 11, fontWeight: FontWeight.w500),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -151,7 +221,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
                 ),
               ),
               Text(
-                'En ligne',
+                'Online',
                 style: GoogleFonts.barlow(
                   color: const Color(0xFF38EF7D),
                   fontSize: 12,
@@ -368,7 +438,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
                     fontSize: 16,
                   ),
                   decoration: InputDecoration(
-                    hintText: 'Posez votre question santé...',
+                    hintText: 'Ask your health question...',
                     hintStyle: GoogleFonts.barlow(
                       color: const Color(0xFF8E8E93),
                       fontSize: 16,
@@ -417,11 +487,11 @@ class _AIChatScreenState extends State<AIChatScreen> {
     final difference = now.difference(time);
     
     if (difference.inMinutes < 1) {
-      return 'À l\'instant';
+      return 'Just now';
     } else if (difference.inMinutes < 60) {
-      return 'Il y a ${difference.inMinutes}min';
+      return '${difference.inMinutes}min ago';
     } else if (difference.inHours < 24) {
-      return 'Il y a ${difference.inHours}h';
+      return '${difference.inHours}h ago';
     } else {
       return '${time.day}/${time.month} ${time.hour}:${time.minute.toString().padLeft(2, '0')}';
     }
@@ -454,13 +524,13 @@ class _AIChatScreenState extends State<AIChatScreen> {
             const SizedBox(height: 20),
             _buildOptionTile(
               icon: Icons.refresh,
-              title: 'Nouvelle conversation',
+              title: 'New conversation',
               onTap: () {
                 Navigator.pop(context);
                 setState(() {
                   _messages.clear();
                   _messages.add(ChatMessage(
-                    text: "👋 Nouvelle conversation ! Comment puis-je vous aider ?",
+                    text: "👋 New conversation! How can I help you?",
                     isUser: false,
                     timestamp: DateTime.now(),
                   ));
@@ -469,15 +539,15 @@ class _AIChatScreenState extends State<AIChatScreen> {
             ),
             _buildOptionTile(
               icon: Icons.share,
-              title: 'Partager la conversation',
+              title: 'Share conversation',
               onTap: () {
                 Navigator.pop(context);
-                // Implémenter le partage
+                // TODO: implement sharing
               },
             ),
             _buildOptionTile(
               icon: Icons.info_outline,
-              title: 'À propos du coach IA',
+              title: 'About the AI coach',
               onTap: () {
                 Navigator.pop(context);
                 _showAboutDialog();
@@ -515,14 +585,14 @@ class _AIChatScreenState extends State<AIChatScreen> {
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1C1C1E),
         title: Text(
-          'Coach IA Santé',
+          'AI Health Coach',
           style: GoogleFonts.barlow(
             color: Colors.white,
             fontWeight: FontWeight.bold,
           ),
         ),
         content: Text(
-          'Votre assistant personnel pour un mode de vie plus sain. Je vous aide avec des conseils sur l\'activité physique, le sommeil, la nutrition et le bien-être général.\n\n⚠️ Mes conseils ne remplacent pas un avis médical professionnel.',
+          'Your personal assistant for a healthier lifestyle. I can help with guidance on physical activity, sleep, nutrition, and general well-being.\n\n⚠️ My advice does not replace professional medical guidance.',
           style: GoogleFonts.barlow(
             color: const Color(0xFF8E8E93),
             height: 1.4,
@@ -532,7 +602,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text(
-              'Compris',
+              'Got it',
               style: GoogleFonts.barlow(
                 color: const Color(0xFF38EF7D),
                 fontWeight: FontWeight.w600,

@@ -51,6 +51,8 @@ directly in the terminal.
 | Escalation | `/escalation/{patient_id}` produces an actual clinician-facing summary - measurements vs. baseline, flagged rules with guideline citations, recent trend. **New**: the Flutter app now has a real `EscalationScreen` that shows it and a "share with your care team" button (native share sheet), closing the delivery gap that existed before |
 | Data rights | **New.** `DELETE /patient/{id}` and `GET /patient/{id}/export` (plus `cli.py delete-patient`/`export-patient`) actually implement right-to-erasure and right-to-access, not just a policy promise. See [`PRIVACY.md`](PRIVACY.md) for what's covered and what still isn't (consent flow, encryption at rest, retention policy, audit log) |
 | Python backend (`backend/`) | Working. Local pipeline: baselines → anomaly rules → guideline retrieval → coaching replies. The Flutter app now calls it directly over loopback |
+| Tests | 28 passing (`pytest -q` from `backend/`), up from 17 - added coverage for the `recent_trend` chat fix, the `TemplateBackend` fallback, and the `/summary` API endpoint, including a live regression test against a real local Ollama model (skipped automatically if none is running) |
+| Real AI verification | **Confirmed live, not assumed.** This environment has Ollama installed and running with `llama3.2` pulled (`config.py`'s default), so the LLM conversational layer was exercised directly, not just unit-tested against a fake: asked "what is the least I slept," it correctly answered from the real `recent_trend` data (5.1h) instead of the fabricated figure the same question used to produce before that fix. See `tests/test_coach.py`'s `test_ollama_backend_uses_real_trend_data_not_fabrication` |
 
 Nothing here has touched a real patient's data. The synthetic generator in
 `backend/health_coach/ingestion.py` exists specifically so the pipeline can be
@@ -304,6 +306,70 @@ Sensor model first, clinical rule engine second, LLM last: the conversational
 layer only ever explains and delivers what the deterministic rule engine and
 retrieval layer already computed - it does not diagnose from raw numbers.
 
+**This was violated until it was caught in a live demo:** the chat prompt
+originally only included today's high-level recommendation text and recent
+chat history - no actual sleep/HR/steps numbers at all. Asked "what's the
+least I slept," the model fabricated a plausible-sounding "6 hours" instead
+of the real 5.1h in that run, because it had no real number to draw from.
+Fixed in `coach.py`/`llm_backends.py`: `CoachContext` now carries a
+`recent_trend` block (real per-day resting HR/sleep/steps, from
+`storage.load_recent_daily_features()`), and the system prompt explicitly
+instructs the model to say it doesn't have a figure rather than invent one
+when asked about something outside that data. Verified by inspecting the
+actual constructed prompt against known ground-truth data, not just by
+eyeballing chat replies.
+
+**A 20-question live test battery against the real Ollama model surfaced
+two more failure modes in the same family, both now fixed:**
+
+1. **A grounded number with a dangerously wrong conclusion.** Asked "What
+   was my heart rate on August 29th?" (a real 128 bpm escalate-level spike),
+   the model answered "128bpm. No concerns here! Just a normal day." The
+   number was correct - the interpretation wasn't, and nothing tied that
+   specific date to what the rule engine had already determined about it.
+   Tellingly, the same fact framed as "should I be worried about that
+   spike?" got answered correctly five questions later - real fragility
+   depending on phrasing. Fixed by annotating each day in `recent_trend`
+   with its actual stored risk level when not normal (`storage.
+   load_recent_risk_assessments()`, new), so a day the rule engine already
+   flagged carries that fact inline, next to the number, instead of relying
+   on the model to correctly cross-reference a separate guideline snippet
+   against a date.
+2. **Fabricated non-numeric citations.** Asked about an ibuprofen
+   interaction, the model attributed its answer to the "National
+   Comprehensive Cancer Network (NCCN)" - a real organization, never
+   actually in `guideline_snippets`, invented from general training
+   knowledge and presented as if retrieved. After that pattern was caught
+   (`ground_citations()`, checks "Name (ACRONYM)" shapes against what was
+   actually retrieved), the model pivoted to citing a bare "the FDA" with
+   no parenthetical name at all - same fabrication, different shape, closed
+   with a small fixed vocabulary of known health-authority acronyms rather
+   than matching arbitrary capitalized text.
+
+Both fixes are deliberately narrow and documented as such in code, not
+claimed as complete coverage: `ground_citations()` only catches these two
+specific citation shapes. There is also no path today for something a
+patient *says* in chat (e.g. distress about continuing treatment) to reach
+the rule engine - only wearable metrics can trigger `escalate`, never
+conversation content.
+
+**The counting-style gap above got an architectural fix, not another prompt
+patch.** "How many days did I sleep less than 6 hours" is a different shape
+of problem than average/lowest/highest: the threshold is whatever number the
+patient types, so it can't be precomputed in `trend_stats` ahead of time the
+way an average can. `coach.py`'s `_try_answer_count_question()` detects this
+question shape (a metric + comparator + number, e.g. "less than", "at
+least") and answers it with an exact Python filter-and-count over the real
+`DailyFeatures`, bypassing the LLM entirely for that turn - `CoachAgent.
+handle_message` calls it before ever calling `self.backend.generate()`, and
+only falls through to the model if it doesn't match. Re-running the exact
+question that miscounted now returns "your sleep was below 6.0h on 4 days:
+2026-08-20, 2026-08-22, 2026-08-28, 2026-08-30" - deterministically, every
+time, because there's no LLM inference involved at all for this class of
+question anymore. Narrow by design: it only matches this specific shape
+(metric + comparator + number), so anything phrased differently, or
+combined with a second question, still goes through the LLM path as before.
+
 ## Known gaps / next steps
 
 What's left, now that the app↔backend bridge, real device reads, escalation
@@ -427,3 +493,34 @@ detail lives in the section it's linked to above - this is the timeline.
     from stage 6 - confirmed by re-running the same retrieval query and
     watching the top result change from tangential fatigue content to
     actual arrhythmia-monitoring guidance.
+12. **Pre-submission verification pass: ran the test suite, confirmed the
+    LLM layer is genuinely live (not just theoretically wired up), fixed
+    two real bugs, and closed the largest test-coverage gaps.** Found this
+    environment has a local Ollama daemon running with `llama3.2` already
+    pulled, so instead of taking "the coach uses a real LLM" on faith, ran
+    `OllamaBackend` directly against the exact fabrication scenario stage 11
+    fixed and confirmed the reply now cites the real 5.1h figure - codified
+    as `tests/test_coach.py::test_ollama_backend_uses_real_trend_data_not_fabrication`
+    (auto-skips if no Ollama daemon is reachable, so the suite stays
+    portable). Added `tests/test_coach.py`, `tests/test_llm_backends.py`,
+    and `tests/test_api.py` (28 tests total, up from 17) covering code that
+    had zero coverage before: the `recent_trend` prompt-building logic, the
+    deterministic `TemplateBackend` fallback, and the FastAPI bridge. Found
+    a real bug while writing that last one: `GET /summary/{patient_id}`
+    ignored the `day` query parameter when loading the risk assessment -
+    it always returned the *latest* assessment regardless of which day's
+    features were requested, so querying an old day could pair that day's
+    real measurements with an unrelated, more recent risk level and
+    findings. Fixed in `api.py` to look up the assessment for the same day
+    the returned features actually came from. Separately, found the AI
+    chat screen (`ai_chat_screen.dart`, `quick_suggestions.dart`) still had
+    French UI strings left over from the original canned chatbot (see
+    stage 5) despite every other screen being English - translated them.
+    This wasn't purely cosmetic: the guideline corpus and `guidelines.py`'s
+    TF-IDF tokenizer are English-only, so a tapped French suggestion chip
+    would silently retrieve zero guideline citations (no cross-language
+    keyword overlap), quietly degrading the "guideline-grounded" property
+    for exactly the questions the UI was suggesting. `flutter analyze`
+    still couldn't be run - no Flutter/Dart SDK in this environment - so
+    the Dart changes are reviewed-but-unverified the same way stage 11's
+    Health Connect rewrite was.

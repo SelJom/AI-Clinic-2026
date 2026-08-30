@@ -230,6 +230,21 @@ def load_risk_assessment_for_day(
     return _row_to_assessment(row)
 
 
+def load_recent_risk_assessments(
+    patient_id: str, before: date, limit_days: int, db_path: Path | None = None
+) -> list[RiskAssessment]:
+    """Mirrors load_recent_daily_features's window (day < before, oldest to
+    newest) so callers can zip the two together per day."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM risk_assessments WHERE patient_id = ? AND day < ? "
+            "ORDER BY day DESC LIMIT ?",
+            (patient_id, before.isoformat(), limit_days),
+        ).fetchall()
+    rows = list(reversed(rows))
+    return [a for a in (_row_to_assessment(r) for r in rows) if a is not None]
+
+
 def _row_to_assessment(row: sqlite3.Row | None) -> RiskAssessment | None:
     if row is None:
         return None

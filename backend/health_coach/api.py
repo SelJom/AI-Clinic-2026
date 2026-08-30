@@ -24,7 +24,16 @@ app = FastAPI(title="Health Coach Local API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1", "http://localhost", "capacitor://localhost"],
+    allow_origins=["capacitor://localhost"],
+    # Real browsers always include the port in the Origin header (e.g.
+    # "http://127.0.0.1:5050" for `flutter run -d chrome`/web-server), so a
+    # port-less entry in allow_origins never matches and CORS silently blocks
+    # every request - confirmed live: the Flutter web build showed "Offline"
+    # even with the backend actually running, because the browser's preflight
+    # request was rejected before the app ever got a real error to report.
+    # A regex matching loopback on any port keeps the same "local only"
+    # intent while actually working for a real dev-server port.
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -69,11 +78,11 @@ def ingest(req: IngestRequest) -> dict:
 def summary(patient_id: str, day: date | None = None) -> dict:
     target_day = day or date.today()
     history = storage.load_recent_daily_features(patient_id, before=target_day + timedelta(days=1), limit_days=1)
-    assessment = storage.load_latest_risk_assessment(patient_id)
     if not history:
         raise HTTPException(404, "no data for this patient/day yet")
 
     features = history[-1]
+    assessment = storage.load_risk_assessment_for_day(patient_id, features.day)
     return {
         "day": str(features.day),
         "resting_hr": features.resting_hr,

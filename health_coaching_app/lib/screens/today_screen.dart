@@ -8,7 +8,13 @@ import 'escalation_screen.dart';
 /// Main screen displaying today's health metrics
 /// Shows steps, resting heart rate, and sleep duration with refresh capability
 class TodayScreen extends StatefulWidget {
-  const TodayScreen({super.key});
+  /// True when shown side-by-side with an always-visible chat panel
+  /// (see home_shell.dart's wide-screen layout) - hides the "Ask Coach"
+  /// button in that case, since opening the coach via navigation would be
+  /// redundant when it's already visible next to this screen.
+  final bool embedded;
+
+  const TodayScreen({super.key, this.embedded = false});
 
   @override
   State<TodayScreen> createState() => _TodayScreenState();
@@ -51,7 +57,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
     try {
       // For demo mode, always load the demo data
-      print('🎯 Demo mode: Loading demo health data');
+      debugPrint('🎯 Demo mode: Loading demo health data');
       await _loadHealthData();
       
       setState(() {
@@ -869,52 +875,57 @@ class _TodayScreenState extends State<TodayScreen> {
               const SizedBox(height: 20),
               Row(
                 children: [
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => AIChatScreen(
-                              patientId: _patientId,
-                              healthData: _currentHealthDataForChat(),
-                            ),
-                          ),
-                        );
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.3),
-                            width: 1,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(
-                              Icons.chat_bubble_outline_rounded,
-                              color: Colors.white,
-                              size: 18,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Ask Coach',
-                              style: GoogleFonts.barlow(
-                                color: Colors.white,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
+                  // On wide screens the chat is already visible in the side
+                  // panel (see HomeShell) - a button that navigates to
+                  // another copy of it would just be redundant.
+                  if (!widget.embedded) ...[
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => AIChatScreen(
+                                patientId: _patientId,
+                                healthData: _currentHealthDataForChat(),
                               ),
                             ),
-                          ],
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(
+                                Icons.chat_bubble_outline_rounded,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Ask Coach',
+                                style: GoogleFonts.barlow(
+                                  color: Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
+                    const SizedBox(width: 12),
+                  ],
                   Expanded(
                     child: GestureDetector(
                       onTap: () {

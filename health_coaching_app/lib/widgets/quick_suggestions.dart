@@ -22,7 +22,7 @@ class QuickSuggestions extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Questions suggérées',
+            'Suggested questions',
             style: GoogleFonts.barlow(
               color: const Color(0xFF8E8E93),
               fontSize: 14,
@@ -47,23 +47,23 @@ class QuickSuggestions extends StatelessWidget {
       final sleepHours = healthData!['sleepHours'] ?? 0;
       
       return [
-        'Comment améliorer mes ${steps} pas quotidiens ?',
-        'Ma fréquence cardiaque de ${heartRate} bpm est-elle normale ?',
-        'Conseils pour optimiser mes ${sleepHours}h de sommeil',
-        'Quel programme d\'exercice me recommandez-vous ?',
-        'Comment améliorer ma nutrition ?',
-        'Techniques de gestion du stress',
+        'How can I improve my $steps daily steps?',
+        'Is my heart rate of $heartRate bpm normal?',
+        'Tips to improve my ${sleepHours}h of sleep',
+        'What exercise routine would you recommend?',
+        'How can I improve my nutrition?',
+        'Stress management techniques',
       ];
     }
-    
-    // Suggestions par défaut
+
+    // Default suggestions
     return [
-      'Comment commencer une routine d\'exercice ?',
-      'Conseils pour mieux dormir',
-      'Quelle alimentation adopter ?',
-      'Comment gérer le stress ?',
-      'Exercices pour débutants',
-      'Hydratation optimale',
+      'How do I start an exercise routine?',
+      'Tips for sleeping better',
+      'What diet should I follow?',
+      'How do I manage stress?',
+      'Beginner-friendly exercises',
+      'Optimal hydration',
     ];
   }
 

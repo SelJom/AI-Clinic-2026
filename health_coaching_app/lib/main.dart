@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'screens/today_screen.dart';
+import 'screens/home_shell.dart';
 
 /// Main entry point for the Health Coaching App
 void main() {
@@ -105,7 +105,7 @@ class HealthCoachingApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const TodayScreen(),
+      home: const HomeShell(),
     );
   }
 }

@@ -1,4 +1,13 @@
-from health_coach.llm_backends import CoachContext, TemplateBackend
+import json
+from unittest.mock import patch
+
+from health_coach.llm_backends import (
+    CoachContext,
+    OllamaBackend,
+    TemplateBackend,
+    ground_citations,
+    ground_reply,
+)
 
 
 def _ctx(**overrides) -> CoachContext:
@@ -38,3 +47,120 @@ def test_template_backend_answers_why_with_guideline_context():
     )
     assert "baseline" in reply.lower()
     assert "Encourage regular sleep habits to manage fatigue." in reply
+
+
+# --- ground_reply: unconditional post-generation safety net -----------------
+# Regression coverage for the "we can't prompt-engineer every phrasing"
+# problem: this doesn't depend on how the question was asked, only on
+# whether the model's stated number actually appears in the real data.
+
+def test_ground_reply_strips_ungrounded_sleep_figure():
+    ctx = _ctx(recent_trend=["2026-08-25: resting HR 71 bpm, sleep 5.1h, steps 3200"])
+    reply = ground_reply("Your average sleep was 6.0h last week.", ctx)
+    assert "6.0h" not in reply
+    assert "a specific figure I don't have handy" in reply
+
+
+def test_ground_reply_keeps_grounded_figures_from_trend():
+    ctx = _ctx(recent_trend=["2026-08-25: resting HR 71 bpm, sleep 5.1h, steps 3200"])
+    reply = ground_reply("Your lowest sleep was 5.1h, with a heart rate of 71 bpm.", ctx)
+    assert "5.1h" in reply
+    assert "71 bpm" in reply
+    assert "don't have handy" not in reply
+
+
+def test_ground_reply_catches_unit_before_number_phrasing():
+    """Regression test for a real live failure: the model said "steps were
+    8500" (real value 8247) - a number-then-unit-only pattern missed this
+    because the unit came first."""
+    ctx = _ctx(recent_trend=["2026-08-30: resting HR 69 bpm, sleep 8.0h, steps 8247"])
+    reply = ground_reply("Your steps were 8500 today.", ctx)
+    assert "8500" not in reply
+    assert "a specific figure I don't have handy" in reply
+
+    # And the correctly-grounded reversed phrasing must survive untouched.
+    reply2 = ground_reply("Your steps were 8247 today.", ctx)
+    assert "8247" in reply2
+
+
+def test_ground_reply_keeps_grounded_figures_from_precomputed_stats():
+    ctx = _ctx(trend_stats=["sleep over 3 days: average 6.4h, lowest 5.1h on 2026-08-25, highest 7.2h on 2026-08-24"])
+    reply = ground_reply("On average you slept 6.4h.", ctx)
+    assert "6.4h" in reply
+    assert "don't have handy" not in reply
+
+
+def test_ground_reply_keeps_figures_sourced_from_guideline_citations():
+    ctx = _ctx(guideline_snippets=["Patients should aim for at least 100 bpm during light activity."])
+    reply = ground_reply("Guidelines suggest aiming for 100 bpm during light activity.", ctx)
+    assert "100 bpm" in reply
+    assert "don't have handy" not in reply
+
+
+def test_ground_reply_ignores_numbers_without_a_matching_unit():
+    ctx = _ctx()
+    reply = ground_reply("Try to keep replies to 3-5 sentences and check in again in 2 days.", ctx)
+    assert reply == "Try to keep replies to 3-5 sentences and check in again in 2 days."
+
+
+def test_ollama_backend_grounds_reply_before_returning(monkeypatch):
+    fabricated = "Your average sleep was 6.0h and heart rate 200 bpm."
+    fake_response = json.dumps({"response": fabricated}).encode("utf-8")
+
+    class FakeResp:
+        def read(self):
+            return fake_response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch("health_coach.llm_backends.urllib.request.urlopen", return_value=FakeResp()):
+        ctx = _ctx(recent_trend=["2026-08-25: resting HR 71 bpm, sleep 5.1h, steps 3200"])
+        reply = OllamaBackend().generate("what's my average sleep and heart rate?", ctx)
+
+    assert "6.0h" not in reply
+    assert "200 bpm" not in reply
+    assert reply.count("a specific figure I don't have handy") == 2
+
+
+# --- ground_citations: strips fabricated named-source attributions ----------
+# Regression coverage for a real failure: asked about medication interactions,
+# the model attributed its answer to the "National Comprehensive Cancer
+# Network (NCCN)" - a real organization never present in guideline_snippets.
+
+def test_ground_citations_strips_fabricated_organization():
+    ctx = _ctx(guideline_snippets=["Discuss any medication with your care team before use."])
+    reply = ground_citations(
+        "According to the National Comprehensive Cancer Network (NCCN), consult your care team.", ctx
+    )
+    assert "NCCN" not in reply
+    assert "National Comprehensive Cancer Network" not in reply
+    assert "a general clinical source" in reply
+
+
+def test_ground_citations_keeps_organization_actually_in_guidelines():
+    ctx = _ctx(guideline_snippets=["Per the American Heart Association (AHA), monitor resting HR."])
+    reply = ground_citations("The American Heart Association (AHA) recommends monitoring your resting HR.", ctx)
+    assert "American Heart Association (AHA)" in reply
+
+
+def test_ground_citations_ignores_non_parenthetical_self_references():
+    ctx = _ctx()
+    reply = "According to the Precomputed trend statistics, your average sleep is 6.9 hours."
+    assert ground_citations(reply, ctx) == reply
+
+
+def test_ground_citations_strips_bare_ungrounded_authority_acronym():
+    ctx = _ctx(guideline_snippets=["Discuss any medication with your care team before use."])
+    reply = ground_citations("The FDA has not approved ibuprofen for use during cancer treatment.", ctx)
+    assert "FDA" not in reply
+    assert "a general clinical source" in reply
+
+
+def test_ground_citations_keeps_bare_acronym_actually_in_guidelines():
+    ctx = _ctx(guideline_snippets=["Per WHO guidance, monitor symptoms closely during treatment."])
+    reply = ground_citations("WHO guidance recommends monitoring your symptoms.", ctx)
+    assert "WHO" in reply

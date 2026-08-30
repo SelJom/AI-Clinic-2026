@@ -1,4 +1,5 @@
 import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:health/health.dart';
 
 /// Service class responsible for managing health data access and permissions.
@@ -52,7 +53,7 @@ class HealthService {
       bool? hasPermissions = await _health.hasPermissions(_dataTypes, permissions: _permissions);
       return hasPermissions ?? false;
     } catch (e) {
-      print('Error checking health permissions: $e');
+      debugPrint('Error checking health permissions: $e');
       return false;
     }
   }
@@ -68,7 +69,7 @@ class HealthService {
       bool? hasPermissions = await _health.hasPermissions(_dataTypes, permissions: _permissions);
       return hasPermissions ?? false;
     } catch (e) {
-      print('Error requesting health permissions: $e');
+      debugPrint('Error requesting health permissions: $e');
       return false;
     }
   }
@@ -93,7 +94,7 @@ class HealthService {
       bool granted = await requestPermissionsForRealDevice();
       return !granted;
     } catch (e) {
-      print('Error determining health data availability: $e');
+      debugPrint('Error determining health data availability: $e');
       return true;
     }
   }
@@ -127,7 +128,7 @@ class HealthService {
 
       return 0; // Tried, found no data for today yet.
     } catch (e) {
-      print('Error fetching steps from Health Connect/HealthKit: $e');
+      debugPrint('Error fetching steps from Health Connect/HealthKit: $e');
       return _getSimulatedSteps();
     }
   }
@@ -180,7 +181,7 @@ class HealthService {
       if (count == 0) return null;
       return totalHeartRate / count;
     } catch (e) {
-      print('Error fetching resting heart rate data: $e');
+      debugPrint('Error fetching resting heart rate data: $e');
       return _getSimulatedHeartRate();
     }
   }
@@ -223,7 +224,7 @@ class HealthService {
 
       return totalSleep;
     } catch (e) {
-      print('Error fetching sleep data: $e');
+      debugPrint('Error fetching sleep data: $e');
       final hours = _getSimulatedSleepDuration();
       return Duration(minutes: (hours * 60).round());
     }
@@ -236,7 +237,7 @@ class HealthService {
       await _ensureConfigured();
       return _health.isDataTypeAvailable(HealthDataType.STEPS);
     } catch (e) {
-      print('Error checking health data availability: $e');
+      debugPrint('Error checking health data availability: $e');
       return false;
     }
   }

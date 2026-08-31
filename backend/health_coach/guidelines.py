@@ -17,6 +17,18 @@ _STOPWORDS = {
     "from", "who", "may", "can", "not", "have", "has", "had", "been", "being",
     "its", "their", "than", "then", "into", "onto", "such", "also", "used",
     "based", "these", "those", "which", "when", "where", "there",
+    # Interrogative/filler words common in how a patient actually phrases a
+    # question ("how much sleep do I need", "what should my cholesterol
+    # be") - missing these was a real, live-confirmed retrieval bug: "how
+    # much sleep do I need" scored highest against an unrelated NCI sentence
+    # that happened to also contain "how much...need" ("how much survivors
+    # would need to continue performing qigong"), because "how"/"much"/
+    # "need" were weighted as real topic words while "sleep" - the only word
+    # that actually mattered - got diluted out. None of these carry topical
+    # signal on their own, in this corpus or any other.
+    "how", "much", "many", "what", "why", "does", "did", "doing", "need",
+    "needs", "want", "wants", "would", "could", "get", "gets", "you", "your",
+    "about", "aim", "good", "amount",
 }
 
 
@@ -32,23 +44,34 @@ class GuidelineStore:
     bottleneck.
     """
 
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, path: Path | list[Path]):
+        # A single path still works (matches every prior caller); a list
+        # merges multiple JSONL corpora into one combined retrieval index -
+        # each still keeps its own honest guideline_id/source_url per line,
+        # so results are still traceable back to which file they came from.
+        self.paths = [path] if isinstance(path, Path) else list(path)
         self.docs: list[dict] = []
         self._doc_vectors: list[dict[str, float]] = []
         self._idf: dict[str, float] = {}
         self._load()
 
-    def _load(self) -> None:
-        if not self.path.exists():
-            raise FileNotFoundError(f"Guideline corpus not found at {self.path}")
+    @property
+    def path(self) -> Path:
+        """Back-compat for anything still reading the single-path attribute."""
+        return self.paths[0]
 
-        with self.path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                self.docs.append(json.loads(line))
+    def _load(self) -> None:
+        missing = [p for p in self.paths if not p.exists()]
+        if missing:
+            raise FileNotFoundError(f"Guideline corpus not found at {missing[0]}")
+
+        for path in self.paths:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self.docs.append(json.loads(line))
 
         doc_tokens = [tokenize(d["text"]) for d in self.docs]
         n_docs = len(self.docs)
@@ -101,4 +124,4 @@ class GuidelineStore:
 
 @lru_cache(maxsize=1)
 def get_default_store() -> GuidelineStore:
-    return GuidelineStore(config.GUIDELINES_PATH)
+    return GuidelineStore([config.GUIDELINES_PATH, config.GENERAL_HEALTH_REFERENCE_PATH])

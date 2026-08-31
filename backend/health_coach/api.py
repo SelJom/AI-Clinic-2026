@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from . import storage
 from .coach import CoachAgent
 from .escalation import build_escalation_summary
+from .features import aggregate_period
 from .models import SignalType, WearableSample
 from .pipeline import process_samples
 
@@ -88,12 +89,66 @@ def summary(patient_id: str, day: date | None = None) -> dict:
         "resting_hr": features.resting_hr,
         "sleep_hours": features.sleep_hours,
         "steps": features.steps,
+        "calories": features.calories,
         "hr_zscore": features.hr_zscore,
         "sleep_zscore": features.sleep_zscore,
         "steps_zscore": features.steps_zscore,
+        "calories_zscore": features.calories_zscore,
         "risk_level": assessment.level.value if assessment else "unknown",
         "hits": [h.description for h in assessment.hits] if assessment else [],
     }
+
+
+@app.get("/trend/{patient_id}")
+def trend(patient_id: str, days: int = 30, period: str = "daily") -> dict:
+    """Multi-day history for charting - the app only ever surfaced this data
+    inside chat answers before (see coach.py's recent_trend/trend_stats),
+    never visually. Returns real stored rows only, oldest to newest; no
+    padding to `days` with placeholder entries for days that don't exist.
+
+    `period`: "daily" (default, unchanged shape), "weekly", or "monthly" -
+    see features.aggregate_period() for how days are summed vs. averaged
+    and what day_count means."""
+    if period not in ("daily", "weekly", "monthly"):
+        raise HTTPException(400, "period must be daily, weekly, or monthly")
+    days = max(1, min(days, 400))
+    history = storage.load_recent_daily_features(
+        patient_id, before=date.today() + timedelta(days=1), limit_days=days
+    )
+
+    if period == "daily":
+        return {
+            "patient_id": patient_id,
+            "period": period,
+            "days": [
+                {
+                    "day": str(f.day),
+                    "resting_hr": f.resting_hr,
+                    "sleep_hours": f.sleep_hours,
+                    "steps": f.steps,
+                    "calories": f.calories,
+                    "hr_baseline": f.hr_baseline,
+                    "sleep_baseline": f.sleep_baseline,
+                    "steps_baseline": f.steps_baseline,
+                    "calories_baseline": f.calories_baseline,
+                }
+                for f in history
+            ],
+        }
+
+    return {"patient_id": patient_id, "period": period, "periods": aggregate_period(history, period)}
+
+
+@app.get("/activity-summary/{patient_id}")
+def activity_summary(patient_id: str) -> dict:
+    """Today's activity level - a deterministic label (see activity.py)
+    plus an AI-generated, grounded explanation of why. Recomputed fresh on
+    every call (nothing cached), so the app can safely re-request this
+    whenever real data changes meaningfully during the day."""
+    result = _agent.build_activity_summary(patient_id)
+    if result is None:
+        raise HTTPException(404, "no data for this patient yet")
+    return result
 
 
 @app.post("/chat")

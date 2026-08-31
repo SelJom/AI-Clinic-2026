@@ -12,6 +12,7 @@ class SignalType(str, Enum):
     SLEEP_MINUTES = "sleep_minutes"
     SPO2 = "spo2"
     SYMPTOM_FATIGUE = "symptom_fatigue"  # 0-10 self-reported scale
+    CALORIES = "calories"  # active energy burned, kcal - Samsung Health/Health Connect ACTIVE_CALORIES_BURNED
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class DailyFeatures:
     sleep_hours: float | None = None
     steps: int | None = None
     fatigue_score: float | None = None
+    calories: float | None = None
 
     hr_baseline: float | None = None
     hr_zscore: float | None = None
@@ -38,6 +40,8 @@ class DailyFeatures:
     sleep_zscore: float | None = None
     steps_baseline: float | None = None
     steps_zscore: float | None = None
+    calories_baseline: float | None = None
+    calories_zscore: float | None = None
 
 
 class RiskLevel(str, Enum):

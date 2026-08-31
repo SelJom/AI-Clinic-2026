@@ -51,6 +51,15 @@ class PatientProfile:
     sleep_noise: float = 1.6
     steps_noise: float = 4500.0
 
+    # Active-energy-burned calories, not total/BMR - matches what
+    # HealthDataType.ACTIVE_ENERGY_BURNED / the app's Calories card actually
+    # shows. No real calibration source for this one (LifeSnaps' calibration
+    # above only covers hr/sleep/steps) - kept simple and steps-linked so it
+    # moves the same direction steps do (a low-activity day has low active
+    # calories too), rather than an independent, unrelated random walk.
+    baseline_calories: float = 350.0
+    calories_noise: float = 70.0
+
 
 def generate_synthetic_day(
     profile: PatientProfile,
@@ -73,11 +82,22 @@ def generate_synthetic_day(
     elif anomaly == "inactivity":
         steps = rng.randint(50, 400)
 
+    # Linked to how far steps deviated from this patient's own baseline, so
+    # a low-steps day (inactivity anomaly included) shows correspondingly
+    # low active calories instead of an unrelated independent number.
+    calories = max(
+        0.0,
+        profile.baseline_calories
+        + (steps - profile.baseline_steps) * 0.03
+        + rng.gauss(0.0, profile.calories_noise),
+    )
+
     ts = datetime.combine(day, time(hour=8), tzinfo=timezone.utc)
     return [
         WearableSample(profile.patient_id, SignalType.RESTING_HEART_RATE, round(resting_hr, 1), ts, "synthetic"),
         WearableSample(profile.patient_id, SignalType.SLEEP_MINUTES, round(sleep_hours * 60), ts, "synthetic"),
         WearableSample(profile.patient_id, SignalType.STEPS, steps, ts, "synthetic"),
+        WearableSample(profile.patient_id, SignalType.CALORIES, round(calories, 1), ts, "synthetic"),
     ]
 
 

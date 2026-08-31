@@ -9,6 +9,8 @@ from health_coach.coach import (
     _format_trend,
     _try_answer_count_question,
     _try_answer_daily_breakdown_question,
+    _try_answer_step_goal_question,
+    _try_answer_windowed_average_question,
 )
 from health_coach.llm_backends import (
     ConversationBackend,
@@ -16,7 +18,7 @@ from health_coach.llm_backends import (
     OllamaBackend,
     ollama_is_reachable,
 )
-from health_coach.models import DailyFeatures, RiskAssessment, RiskLevel
+from health_coach.models import DailyFeatures, RiskAssessment, RiskLevel, RuleHit
 
 
 class RecordingBackend(ConversationBackend):
@@ -217,6 +219,117 @@ def test_daily_breakdown_returns_none_without_daily_phrasing():
     assert _try_answer_daily_breakdown_question("How can I improve my steps?", features) is None
 
 
+# --- _try_answer_windowed_average_question: "average" wins over "per day" --
+# Regression coverage for a real failure found live on a phone: "what's my
+# average step per day amount in the past 7 days" contains "per day", which
+# matched the daily-breakdown dump before this function existed, so the
+# question was answered by dumping all 13 days of raw data instead of
+# computing the actual 7-day average that was asked for.
+
+def _real_phone_steps_features():
+    base = date(2026, 8, 19)
+    values = [1990, 3200, 10942, 10813, 5677, 9872, 9153, 4885, 17510, 10458, 10761, 8247, 8247]
+    return [DailyFeatures("p1", base + timedelta(days=i), steps=v) for i, v in enumerate(values)]
+
+
+def test_windowed_average_wins_over_daily_breakdown_phrasing():
+    features = _real_phone_steps_features()
+    answer = _try_answer_windowed_average_question(
+        "whats my average step per day amount in the past 7 days", features
+    )
+    assert answer is not None
+    # Real average of the last 7 real days (08-25 through 08-31): 9894
+    assert "9894" in answer
+    assert "the last 7 recorded days" in answer
+    # Must not be the full 13-day raw dump this used to produce.
+    assert "2026-08-19" not in answer
+
+
+def test_windowed_average_without_a_day_count_uses_all_features():
+    features = _real_phone_steps_features()
+    answer = _try_answer_windowed_average_question("what's my average steps", features)
+    assert answer is not None
+    assert "the last 13 recorded days" in answer
+
+
+def test_windowed_average_notes_when_fewer_days_exist_than_asked():
+    features = _real_phone_steps_features()[:3]  # only 3 real days
+    answer = _try_answer_windowed_average_question("average steps in the past 30 days", features)
+    assert answer is not None
+    assert "only 3 days actually on record, not 30" in answer
+
+
+def test_windowed_average_returns_none_without_average_phrasing():
+    features = _real_phone_steps_features()
+    assert _try_answer_windowed_average_question("what were my steps each day?", features) is None
+    assert _try_answer_windowed_average_question("how can I improve my steps?", features) is None
+
+
+# --- _try_answer_step_goal_question: real guidance, not silence or a
+# fabricated number ------------------------------------------------------
+# Regression coverage for a real conversation observed live: asked "How
+# much should I aim for", the LLM either invented a precise figure (caught
+# and stripped by ground_reply, leaving "aim for at least a specific figure
+# I don't have handy a day" mid-sentence) or, once burned by that, avoided
+# giving any number at all - both unhelpful for a very common question. The
+# real guideline corpus has zero mentions of "steps", so there's nothing
+# reliable for the LLM to ground an answer in; this bypasses it entirely.
+
+def test_step_goal_question_gives_real_guidance_not_a_fabricated_number():
+    answer = _try_answer_step_goal_question("How much should I aim for", [])
+    assert answer is not None
+    assert "150-300 minutes" in answer  # the real, cited general activity guidance
+    assert "specific figure I don't have handy" not in answer
+
+
+def test_step_goal_question_matches_common_phrasings():
+    for msg in [
+        "How many steps should I aim for?",
+        "What's a good step goal?",
+        "What's the recommended number of steps?",
+        "What's a good amount of steps per day?",
+    ]:
+        assert _try_answer_step_goal_question(msg, []) is not None
+
+
+def test_step_goal_question_includes_todays_real_steps_when_available():
+    features = [DailyFeatures("p1", date(2026, 8, 31), steps=329)]
+    answer = _try_answer_step_goal_question("How much should I aim for", features)
+    assert "329 steps today" in answer
+
+
+def test_step_goal_question_returns_none_for_factual_lookups():
+    """Must not hijack a plain factual question about steps already taken -
+    only questions actually asking for a target/goal should match."""
+    features = [DailyFeatures("p1", date(2026, 8, 31), steps=329)]
+    assert _try_answer_step_goal_question("How many steps did I walk today?", features) is None
+    assert _try_answer_step_goal_question("How many steps have I taken?", features) is None
+    assert _try_answer_step_goal_question("What were my steps yesterday?", features) is None
+
+
+def test_coach_agent_prioritizes_average_over_daily_breakdown(tmp_path, monkeypatch):
+    """End-to-end: the exact question from the live phone bug, through the
+    real CoachAgent.handle_message dispatch order."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    storage.init_db()
+    for f in _real_phone_steps_features():
+        storage.save_daily_features(f)
+
+    backend = RecordingBackend()
+    agent = CoachAgent(backend=backend, guideline_store=_EmptyGuidelineStore())
+
+    # Fixed reference day rather than date.today(), so the test doesn't
+    # depend on the real system clock relative to the fictional seeded dates.
+    reply = agent.handle_message(
+        "p1",
+        "whats my average step per day amount in the past 7 days",
+        latest_assessment=RiskAssessment(patient_id="p1", day=date(2026, 8, 31), level=RiskLevel.NORMAL),
+    )
+
+    assert backend.last_context is None  # answered deterministically, no LLM call
+    assert "9894" in reply
+
+
 def test_handle_message_flags_non_normal_days_in_trend(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
     storage.init_db()
@@ -371,3 +484,68 @@ def test_ollama_backend_strips_fabricated_organization_citation():
     reply = OllamaBackend().generate("Can I take ibuprofen with my treatment?", ctx)
     assert "NCCN" not in reply
     assert "National Comprehensive Cancer Network" not in reply
+
+
+# --- CoachAgent.build_activity_summary: deterministic label + grounded AI why
+
+def test_build_activity_summary_returns_none_without_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    storage.init_db()
+    agent = CoachAgent(backend=RecordingBackend(), guideline_store=_EmptyGuidelineStore())
+    assert agent.build_activity_summary("nobody") is None
+
+
+def test_build_activity_summary_label_is_deterministic_not_llm_chosen(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    storage.init_db()
+    today = date(2026, 8, 30)
+    storage.save_daily_features(DailyFeatures("p1", today, resting_hr=69.0, sleep_hours=7.5, steps=11000, calories=450.0))
+    storage.save_risk_assessment(RiskAssessment(patient_id="p1", day=today, level=RiskLevel.NORMAL))
+
+    backend = RecordingBackend()
+    agent = CoachAgent(backend=backend, guideline_store=_EmptyGuidelineStore())
+    result = agent.build_activity_summary("p1")
+
+    assert result is not None
+    assert result["level"] == "Excellent"  # 11000 steps, computed by activity.py, not the (fake) backend
+    assert result["tier"] == "positive"
+    assert result["steps"] == 11000
+    assert result["summary"] == "ok"  # RecordingBackend's fixed reply - proves the LLM was actually called
+    assert backend.last_context is not None
+
+
+def test_build_activity_summary_escalate_day_is_never_excellent(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    storage.init_db()
+    today = date(2026, 8, 29)
+    storage.save_daily_features(DailyFeatures("p1", today, resting_hr=128.2, sleep_hours=8.3, steps=15000))
+    storage.save_risk_assessment(
+        RiskAssessment(
+            patient_id="p1", day=today, level=RiskLevel.ESCALATE,
+            hits=[RuleHit("tachycardia_severe", "HR spike", RiskLevel.ESCALATE)],
+        )
+    )
+
+    agent = CoachAgent(backend=RecordingBackend(), guideline_store=_EmptyGuidelineStore())
+    result = agent.build_activity_summary("p1")
+
+    assert result["level"] == "Rest"
+    assert result["tier"] == "concern"
+
+
+@pytest.mark.skipif(not ollama_is_reachable(), reason="requires a local Ollama daemon")
+def test_build_activity_summary_live_explanation_is_grounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    storage.init_db()
+    today = date(2026, 8, 30)
+    storage.save_daily_features(DailyFeatures("p1", today, resting_hr=68.0, sleep_hours=7.5, steps=11000, calories=450.0))
+    storage.save_risk_assessment(RiskAssessment(patient_id="p1", day=today, level=RiskLevel.NORMAL))
+
+    agent = CoachAgent(backend=OllamaBackend(), guideline_store=_EmptyGuidelineStore())
+    result = agent.build_activity_summary("p1")
+
+    assert result["level"] == "Excellent"
+    assert isinstance(result["summary"], str) and len(result["summary"]) > 0
+    # The explanation must not fabricate a different step/HR/sleep figure -
+    # grounded via the exact same ground_reply pipeline chat replies use.
+    assert "a specific figure I don't have handy" not in result["summary"]

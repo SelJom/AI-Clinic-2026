@@ -1,12 +1,19 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../services/app_settings.dart';
 import '../services/backend_service.dart';
 import '../services/health_service.dart';
+import '../widgets/animated_tap.dart';
+import 'activity_summary_screen.dart';
 import 'ai_chat_screen.dart';
 import 'escalation_screen.dart';
+import 'metric_history_screen.dart';
+import 'settings_screen.dart';
+import 'trend_screen.dart';
 
 /// Main screen displaying today's health metrics
-/// Shows steps, resting heart rate, and sleep duration with refresh capability
+/// Shows activity level, steps, resting heart rate, sleep, and calories.
 class TodayScreen extends StatefulWidget {
   /// True when shown side-by-side with an always-visible chat panel
   /// (see home_shell.dart's wide-screen layout) - hides the "Ask Coach"
@@ -32,20 +39,79 @@ class _TodayScreenState extends State<TodayScreen> {
   int? _steps;
   double? _restingHeartRate;
   Duration? _sleepDuration;
+  double? _calories;
 
   // Backend coaching state
   Map<String, dynamic>? _backendSummary;
   bool _backendReachable = true;
+
+  // Activity level (hero card) state
+  Map<String, dynamic>? _activitySummary;
+  bool _isLoadingActivity = false;
+  // The steps/calories "bucket" the activity summary was last generated
+  // for - re-fetching the AI summary on every tick would be wasteful (and
+  // slow, it's an LLM call); only re-fetch when steps crosses a new 1000,
+  // or calories a new 100, since the summary was last computed.
+  int _lastActivityStepsBucket = 0;
+  int _lastActivityCaloriesBucket = 0;
 
   // UI state variables
   bool _isLoading = false;
   bool _hasPermissions = false;
   String? _errorMessage;
 
+  // "Last updated" - a real timestamp, ticking live rather than a fixed
+  // "Just now" string. The same 1-minute timer also drives the threshold
+  // check for refreshing the activity summary.
+  DateTime? _lastUpdated;
+  Timer? _ticker;
+
   @override
   void initState() {
     super.initState();
     _initializeHealthData();
+    _ticker = Timer.periodic(const Duration(minutes: 1), (_) => _onTick());
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  /// Runs every minute: refreshes the "last updated" display, and - only
+  /// when real data has moved enough to matter (1000 steps, 100 kcal) -
+  /// quietly re-syncs and refreshes the AI activity summary.
+  Future<void> _onTick() async {
+    if (!mounted) return;
+    setState(() {}); // repaint "X min ago" even if nothing else changed
+    if (!_hasPermissions) return;
+
+    final previousSteps = _steps;
+    final previousCalories = _calories;
+    final results = await Future.wait([
+      _healthService.getSteps(),
+      _healthService.getCalories(),
+    ]);
+    final newSteps = results[0] as int?;
+    final newCalories = results[1] as double?;
+    if (!mounted) return;
+
+    final stepsChanged = newSteps != previousSteps;
+    final caloriesChanged = newCalories != previousCalories;
+    if (!stepsChanged && !caloriesChanged) return;
+
+    setState(() {
+      _steps = newSteps;
+      _calories = newCalories;
+    });
+    await _syncWithBackend();
+
+    final stepsBucket = (newSteps ?? 0) ~/ 1000;
+    final caloriesBucket = (newCalories ?? 0) ~/ 100;
+    if (stepsBucket != _lastActivityStepsBucket || caloriesBucket != _lastActivityCaloriesBucket) {
+      await _refreshActivitySummary();
+    }
   }
 
   /// Initialize health data and request permissions
@@ -56,10 +122,9 @@ class _TodayScreenState extends State<TodayScreen> {
     });
 
     try {
-      // For demo mode, always load the demo data
       debugPrint('🎯 Demo mode: Loading demo health data');
       await _loadHealthData();
-      
+
       setState(() {
         _hasPermissions = true; // Pretend we have permissions for demo
       });
@@ -87,15 +152,19 @@ class _TodayScreenState extends State<TodayScreen> {
         _healthService.getSteps(),
         _healthService.getRestingHeartRate(),
         _healthService.getSleepDuration(),
+        _healthService.getCalories(),
       ]);
 
       setState(() {
         _steps = results[0] as int?;
         _restingHeartRate = results[1] as double?;
         _sleepDuration = results[2] as Duration?;
+        _calories = results[3] as double?;
+        _lastUpdated = DateTime.now();
       });
 
       await _syncWithBackend();
+      await _refreshActivitySummary();
     } catch (e) {
       setState(() {
         _errorMessage = 'Error loading health data: $e';
@@ -118,17 +187,21 @@ class _TodayScreenState extends State<TodayScreen> {
       return;
     }
     try {
+      final isReal = await _healthService.isReadingRealData();
       await _backendService.ingestToday(
         patientId: _patientId,
         steps: _steps!,
         restingHeartRate: _restingHeartRate!,
         sleepMinutes: _sleepDuration!.inMinutes,
+        calories: _calories,
+        source: isReal ? 'samsung_health' : 'simulated',
       );
       final summary = await _backendService.getSummary(_patientId);
       if (!mounted) return;
       setState(() {
         _backendSummary = summary;
         _backendReachable = true;
+        _lastUpdated = DateTime.now();
       });
     } catch (e) {
       if (!mounted) return;
@@ -138,13 +211,28 @@ class _TodayScreenState extends State<TodayScreen> {
     }
   }
 
+  /// Fetches the AI-explained activity level for the hero card. The label
+  /// itself is deterministic (backend/health_coach/activity.py); only the
+  /// "why" text is AI-generated, grounded the same way chat replies are.
+  Future<void> _refreshActivitySummary() async {
+    setState(() => _isLoadingActivity = true);
+    final summary = await _backendService.getActivitySummary(_patientId);
+    if (!mounted) return;
+    setState(() {
+      _activitySummary = summary;
+      _isLoadingActivity = false;
+      _lastActivityStepsBucket = (_steps ?? 0) ~/ 1000;
+      _lastActivityCaloriesBucket = (_calories ?? 0) ~/ 100;
+    });
+  }
+
   /// Format sleep duration as "7h 45min"
   String _formatSleepDuration(Duration? duration) {
     if (duration == null) return 'No data';
-    
+
     int hours = duration.inHours;
     int minutes = duration.inMinutes % 60;
-    
+
     if (hours == 0) {
       return '${minutes}min';
     } else if (minutes == 0) {
@@ -166,13 +254,19 @@ class _TodayScreenState extends State<TodayScreen> {
     return steps.toString();
   }
 
+  /// Format calories burned
+  String _formatCalories(double? calories) {
+    if (calories == null) return 'No data';
+    return '${calories.round()} kcal';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF000000),
       body: RefreshIndicator(
         onRefresh: _hasPermissions ? _loadHealthData : _initializeHealthData,
-        color: const Color(0xFF007AFF),
+        color: AppSettings().accentColor,
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
@@ -194,7 +288,7 @@ class _TodayScreenState extends State<TodayScreen> {
                           child: Text(
                             'Summary',
                             style: GoogleFonts.barlow(
-                              fontSize: 28, // Reduced from 34 to fit better
+                              fontSize: 28,
                               fontWeight: FontWeight.bold,
                               color: const Color(0xFFFFFFFF),
                               letterSpacing: -0.5,
@@ -206,46 +300,48 @@ class _TodayScreenState extends State<TodayScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            // Trends button
+                            IconButton(
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => const TrendScreen(patientId: _patientId),
+                                  ),
+                                );
+                              },
+                              icon: Icon(Icons.show_chart_rounded, color: AppSettings().accentColor, size: 20),
+                              tooltip: 'Trends',
+                            ),
                             // Refresh button
                             IconButton(
                               onPressed: _isLoading ? null : (_hasPermissions ? _loadHealthData : _initializeHealthData),
-                              icon: _isLoading 
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Color(0xFF007AFF),
-                                    ),
-                                  )
-                                : const Icon(
-                                    Icons.refresh_rounded,
-                                    color: Color(0xFF007AFF),
-                                    size: 20,
-                                  ),
+                              icon: _isLoading
+                                  ? SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: AppSettings().accentColor),
+                                    )
+                                  : Icon(Icons.refresh_rounded, color: AppSettings().accentColor, size: 20),
                             ),
                             // Profile icon
-                            GestureDetector(
+                            AnimatedTap(
                               onTap: _showProfileMenu,
                               child: Container(
                                 width: 28,
                                 height: 28,
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF007AFF),
+                                  color: AppSettings().accentColor,
                                   borderRadius: BorderRadius.circular(14),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: const Color(0xFF007AFF).withValues(alpha: 0.3),
+                                      color: AppSettings().accentColor.withValues(alpha: 0.3),
                                       blurRadius: 6,
                                       offset: const Offset(0, 2),
                                     ),
                                   ],
                                 ),
-                                child: const Icon(
-                                  Icons.person_rounded,
-                                  color: Colors.white,
-                                  size: 16,
-                                ),
+                                child: const Icon(Icons.person_rounded, color: Colors.white, size: 16),
                               ),
                             ),
                           ],
@@ -257,52 +353,38 @@ class _TodayScreenState extends State<TodayScreen> {
                 titlePadding: const EdgeInsets.only(left: 20, right: 20, bottom: 16),
               ),
             ),
-            
+
             SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               sliver: SliverList(
                 delegate: SliverChildListDelegate([
                   const SizedBox(height: 8),
-                  
-                  // Date header
                   Text(
                     _getFormattedDate(),
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: const Color(0xFF8E8E93),
-                      fontWeight: FontWeight.w600,
-                    ),
+                          color: const Color(0xFF8E8E93),
+                          fontWeight: FontWeight.w600,
+                        ),
                   ),
-                  
                   const SizedBox(height: 24),
 
-                  // Error message display
                   if (_errorMessage != null) ...[
                     _buildErrorCard(),
                     const SizedBox(height: 20),
                   ],
 
-                  // Main health metrics grid
                   _buildMainMetricsGrid(),
-                  
                   const SizedBox(height: 24),
-                  
-                  // AI Coach Section
                   _buildAICoachSection(),
-                  
                   const SizedBox(height: 24),
-                  
-                  // Secondary metrics
                   _buildSecondaryMetrics(),
-                  
                   const SizedBox(height: 32),
 
-                  // Permissions info
                   if (!_hasPermissions && _errorMessage != null) ...[
                     _buildPermissionsCard(),
                     const SizedBox(height: 20),
                   ],
-                  
-                  
+
                   const SizedBox(height: 40),
                 ]),
               ),
@@ -318,7 +400,6 @@ class _TodayScreenState extends State<TodayScreen> {
     final now = DateTime.now();
     final weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    
     return '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}';
   }
 
@@ -329,10 +410,7 @@ class _TodayScreenState extends State<TodayScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFFFF3B30).withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: const Color(0xFFFF3B30).withValues(alpha: 0.2),
-          width: 1,
-        ),
+        border: Border.all(color: const Color(0xFFFF3B30).withValues(alpha: 0.2), width: 1),
       ),
       child: Row(
         children: [
@@ -342,21 +420,13 @@ class _TodayScreenState extends State<TodayScreen> {
               color: const Color(0xFFFF3B30).withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: const Icon(
-              Icons.error_outline_rounded,
-              color: Color(0xFFFF3B30),
-              size: 20,
-            ),
+            child: const Icon(Icons.error_outline_rounded, color: Color(0xFFFF3B30), size: 20),
           ),
           const SizedBox(width: 16),
           Expanded(
             child: Text(
               _errorMessage!,
-              style: const TextStyle(
-                color: Color(0xFFFF3B30),
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
+              style: const TextStyle(color: Color(0xFFFF3B30), fontSize: 15, fontWeight: FontWeight.w500),
             ),
           ),
         ],
@@ -364,16 +434,44 @@ class _TodayScreenState extends State<TodayScreen> {
     );
   }
 
-  /// Build main metrics grid (Steps as hero card)
+  /// Navigates to the full daily/weekly/monthly history for one metric -
+  /// tapping any card on this screen reaches its own history, per-metric.
+  void _openHistory({
+    required String metricKey,
+    required String title,
+    required String unit,
+    required Color color,
+    int digits = 0,
+  }) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => MetricHistoryScreen(
+          patientId: _patientId,
+          metricKey: metricKey,
+          title: title,
+          unit: unit,
+          color: color,
+          digits: digits,
+        ),
+      ),
+    );
+  }
+
+  void _openActivitySummary() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const ActivitySummaryScreen(patientId: _patientId)),
+    );
+  }
+
+  /// Build main metrics grid: Activity Level as the hero card, then Heart
+  /// Rate/Sleep and Steps/Calories in two rows below.
   Widget _buildMainMetricsGrid() {
     return Column(
       children: [
-        // Hero Steps Card
-        _buildHeroStepsCard(),
-        
+        _buildActivityHeroCard(),
         const SizedBox(height: 16),
-        
-        // Heart Rate and Sleep in a row
         Row(
           children: [
             Expanded(
@@ -387,6 +485,12 @@ class _TodayScreenState extends State<TodayScreen> {
                   colors: [Color(0xFFFF6B6B), Color(0xFFFF3B30)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
+                ),
+                onTap: () => _openHistory(
+                  metricKey: 'resting_hr',
+                  title: 'Heart Rate',
+                  unit: ' bpm',
+                  color: const Color(0xFFFF3B30),
                 ),
               ),
             ),
@@ -403,6 +507,55 @@ class _TodayScreenState extends State<TodayScreen> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
+                onTap: () => _openHistory(
+                  metricKey: 'sleep_hours',
+                  title: 'Sleep',
+                  unit: 'h',
+                  color: const Color(0xFF5856D6),
+                  digits: 1,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        // Steps next to Calories, as requested.
+        Row(
+          children: [
+            Expanded(
+              child: _buildCompactMetricCard(
+                icon: Icons.directions_walk_rounded,
+                title: 'Steps',
+                value: _formatSteps(_steps),
+                unit: '',
+                color: const Color(0xFF007AFF),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF007AFF), Color(0xFF5AC8FA)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                onTap: () => _openHistory(metricKey: 'steps', title: 'Steps', unit: '', color: const Color(0xFF007AFF)),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildCompactMetricCard(
+                icon: Icons.local_fire_department_rounded,
+                title: 'Calories',
+                value: _formatCalories(_calories),
+                unit: '',
+                color: const Color(0xFFFF9500),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFFFB340), Color(0xFFFF9500)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                onTap: () => _openHistory(
+                  metricKey: 'calories',
+                  title: 'Calories',
+                  unit: ' kcal',
+                  color: const Color(0xFFFF9500),
+                ),
               ),
             ),
           ],
@@ -411,85 +564,85 @@ class _TodayScreenState extends State<TodayScreen> {
     );
   }
 
-  /// Build hero steps card (large, prominent)
-  Widget _buildHeroStepsCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF007AFF), Color(0xFF5AC8FA)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+  Color _activityTierColor(String? tier) {
+    switch (tier) {
+      case 'positive':
+        return const Color(0xFF34C759);
+      case 'caution':
+        return const Color(0xFFFF9500);
+      case 'concern':
+        return const Color(0xFFFF3B30);
+      default:
+        return const Color(0xFF007AFF);
+    }
+  }
+
+  /// Hero card: Activity Level, AI-explained on tap. Replaces the old
+  /// Steps-only hero - Steps now lives in the compact grid below, next to
+  /// Calories.
+  Widget _buildActivityHeroCard() {
+    final level = _activitySummary?['level'] as String?;
+    final tier = _activitySummary?['tier'] as String?;
+    final color = _activityTierColor(tier);
+
+    return AnimatedTap(
+      onTap: _openActivitySummary,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [color.withValues(alpha: 0.85), color],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 20, offset: const Offset(0, 8))],
         ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF007AFF).withValues(alpha: 0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.directions_walk_rounded,
-                  color: Colors.white,
-                  size: 28,
-                ),
-              ),
-              const Spacer(),
-              if (_isLoading)
-                const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(12),
                   ),
+                  child: const Icon(Icons.bolt_rounded, color: Colors.white, size: 28),
                 ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Text(
-            'Steps',
-            style: GoogleFonts.barlow(
-              color: Colors.white,
-              fontSize: 17,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.2,
+                const Spacer(),
+                if (_isLoading || _isLoadingActivity)
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                else
+                  const Icon(Icons.chevron_right_rounded, color: Colors.white70, size: 22),
+              ],
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            _isLoading ? '---' : _formatSteps(_steps),
-            style: GoogleFonts.barlow(
-              color: Colors.white,
-              fontSize: 36,
-              fontWeight: FontWeight.bold,
-              letterSpacing: -1,
+            const SizedBox(height: 20),
+            Text(
+              'Activity Level',
+              style: GoogleFonts.barlow(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600, letterSpacing: -0.2),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Today',
-            style: GoogleFonts.barlow(
-              color: Colors.white.withValues(alpha: 0.8),
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
+            const SizedBox(height: 4),
+            Text(
+              _isLoading ? '---' : (level ?? 'Syncing...'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.barlow(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold, letterSpacing: -1),
             ),
-          ),
-        ],
+            const SizedBox(height: 8),
+            Text(
+              'Tap for why',
+              style: GoogleFonts.barlow(color: Colors.white.withValues(alpha: 0.8), fontSize: 15, fontWeight: FontWeight.w500),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -502,66 +655,51 @@ class _TodayScreenState extends State<TodayScreen> {
     required String unit,
     required Color color,
     required Gradient gradient,
+    VoidCallback? onTap,
   }) {
-    return Container(
-      height: 140,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: gradient,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: color.withValues(alpha: 0.3),
-            blurRadius: 15,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(8),
+    return AnimatedTap(
+      onTap: onTap,
+      child: Container(
+        height: 140,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: gradient,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 15, offset: const Offset(0, 6))],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(8)),
+              child: Icon(icon, color: Colors.white, size: 20),
             ),
-            child: Icon(
-              icon,
-              color: Colors.white,
-              size: 20,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            title,
-            style: GoogleFonts.barlow(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
-          if (_isLoading)
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.white,
-              ),
-            )
-          else
+            const Spacer(),
+            // maxLines/ellipsis on both: this Column sits in a fixed-height
+            // (140) card with a Spacer above it, so if either label ever
+            // wraps to a second line - a longer value string, a wider
+            // fallback font before Google Fonts finishes loading, larger
+            // system text scaling - the fixed height overflows. Capping both
+            // to one line keeps the card's height guarantee regardless.
             Text(
-              value,
-              style: GoogleFonts.barlow(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                letterSpacing: -0.5,
-              ),
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.barlow(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
             ),
-        ],
+            const SizedBox(height: 4),
+            if (_isLoading)
+              const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+            else
+              Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.barlow(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -573,10 +711,7 @@ class _TodayScreenState extends State<TodayScreen> {
       children: [
         Text(
           'Health Insights',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-            color: const Color(0xFFFFFFFF),
-            fontWeight: FontWeight.bold,
-          ),
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(color: const Color(0xFFFFFFFF), fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 16),
         Container(
@@ -584,20 +719,14 @@ class _TodayScreenState extends State<TodayScreen> {
           decoration: BoxDecoration(
             color: const Color(0xFF1C1C1E),
             borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.3),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 4))],
           ),
           child: Column(
             children: [
               _buildInsightRow(
                 icon: Icons.trending_up_rounded,
                 title: 'Activity Level',
-                value: _getActivityLevel(),
+                value: _activitySummary?['level'] as String? ?? 'Syncing...',
                 color: const Color(0xFF34C759),
               ),
               const SizedBox(height: 16),
@@ -627,38 +756,17 @@ class _TodayScreenState extends State<TodayScreen> {
       children: [
         Container(
           padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(
-            icon,
-            color: color,
-            size: 20,
-          ),
+          decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+          child: Icon(icon, color: color, size: 20),
         ),
         const SizedBox(width: 16),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: GoogleFonts.barlow(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w500,
-                  color: const Color(0xFF8E8E93),
-                ),
-              ),
+              Text(title, style: GoogleFonts.barlow(fontSize: 15, fontWeight: FontWeight.w500, color: const Color(0xFF8E8E93))),
               const SizedBox(height: 2),
-              Text(
-                value,
-                style: GoogleFonts.barlow(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w600,
-                  color: const Color(0xFFFFFFFF),
-                ),
-              ),
+              Text(value, style: GoogleFonts.barlow(fontSize: 17, fontWeight: FontWeight.w600, color: const Color(0xFFFFFFFF))),
             ],
           ),
         ),
@@ -673,10 +781,7 @@ class _TodayScreenState extends State<TodayScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFFFF9500).withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: const Color(0xFFFF9500).withValues(alpha: 0.2),
-          width: 1,
-        ),
+        border: Border.all(color: const Color(0xFFFF9500).withValues(alpha: 0.2), width: 1),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -685,55 +790,32 @@ class _TodayScreenState extends State<TodayScreen> {
             children: [
               Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFF9500).withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(
-                  Icons.health_and_safety_rounded,
-                  color: Color(0xFFFF9500),
-                  size: 20,
-                ),
+                decoration: BoxDecoration(color: const Color(0xFFFF9500).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.health_and_safety_rounded, color: Color(0xFFFF9500), size: 20),
               ),
               const SizedBox(width: 12),
-              Text(
-                'Health Permissions',
-                style: GoogleFonts.barlow(
-                  color: const Color(0xFFFF9500),
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text('Health Permissions', style: GoogleFonts.barlow(color: const Color(0xFFFF9500), fontSize: 17, fontWeight: FontWeight.bold)),
             ],
           ),
           const SizedBox(height: 12),
           Text(
             'Grant access to your health data to see personalized insights and track your progress over time.',
-            style: GoogleFonts.barlow(
-              color: const Color(0xFFFF9500),
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-              height: 1.4,
-            ),
+            style: GoogleFonts.barlow(color: const Color(0xFFFF9500), fontSize: 15, fontWeight: FontWeight.w500, height: 1.4),
           ),
         ],
       ),
     );
   }
 
-  /// Get activity level based on steps
-  String _getActivityLevel() {
-    if (_steps == null) return 'No data';
-    if (_steps! >= 10000) return 'Excellent';
-    if (_steps! >= 7500) return 'Good';
-    if (_steps! >= 5000) return 'Fair';
-    return 'Low';
-  }
-
-  /// Get last updated time (demo version)
+  /// Real relative time, ticking every minute via _ticker - not a fixed
+  /// "Just now" string.
   String _getLastUpdated() {
-    // Fixed demo time for presentation - looks like recent sync
-    return 'Just now';
+    if (_lastUpdated == null) return 'Never';
+    final diff = DateTime.now().difference(_lastUpdated!);
+    if (diff.inSeconds < 60) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
   }
 
   /// Risk level from the backend drives the card's tone: calm green when
@@ -793,29 +875,16 @@ class _TodayScreenState extends State<TodayScreen> {
       children: [
         Text(
           'AI Coach',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-            color: const Color(0xFFFFFFFF),
-            fontWeight: FontWeight.bold,
-          ),
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(color: const Color(0xFFFFFFFF), fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 16),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: gradientColors,
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
+            gradient: LinearGradient(colors: gradientColors, begin: Alignment.topLeft, end: Alignment.bottomRight),
             borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: gradientColors.first.withValues(alpha: 0.3),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
-              ),
-            ],
+            boxShadow: [BoxShadow(color: gradientColors.first.withValues(alpha: 0.3), blurRadius: 20, offset: const Offset(0, 8))],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -824,53 +893,26 @@ class _TodayScreenState extends State<TodayScreen> {
                 children: [
                   Container(
                     padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.psychology_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
+                    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(12)),
+                    child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 28),
                   ),
                   const Spacer(),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      _coachCardBadge(),
-                      style: GoogleFonts.barlow(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(20)),
+                    child: Text(_coachCardBadge(), style: GoogleFonts.barlow(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
                   ),
                 ],
               ),
               const SizedBox(height: 20),
               Text(
                 'Daily Insights',
-                style: GoogleFonts.barlow(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: -0.3,
-                ),
+                style: GoogleFonts.barlow(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: -0.3),
               ),
               const SizedBox(height: 8),
               Text(
                 _coachInsightText(),
-                style: GoogleFonts.barlow(
-                  color: Colors.white.withValues(alpha: 0.9),
-                  fontSize: 15,
-                  fontWeight: FontWeight.w400,
-                  height: 1.4,
-                ),
+                style: GoogleFonts.barlow(color: Colors.white.withValues(alpha: 0.9), fontSize: 15, fontWeight: FontWeight.w400, height: 1.4),
               ),
               const SizedBox(height: 20),
               Row(
@@ -880,15 +922,12 @@ class _TodayScreenState extends State<TodayScreen> {
                   // another copy of it would just be redundant.
                   if (!widget.embedded) ...[
                     Expanded(
-                      child: GestureDetector(
+                      child: AnimatedTap(
                         onTap: () {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => AIChatScreen(
-                                patientId: _patientId,
-                                healthData: _currentHealthDataForChat(),
-                              ),
+                              builder: (context) => AIChatScreen(patientId: _patientId, healthData: _currentHealthDataForChat()),
                             ),
                           );
                         },
@@ -897,26 +936,19 @@ class _TodayScreenState extends State<TodayScreen> {
                           decoration: BoxDecoration(
                             color: Colors.white.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.3),
-                              width: 1,
-                            ),
+                            border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
                           ),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(
-                                Icons.chat_bubble_outline_rounded,
-                                color: Colors.white,
-                                size: 18,
-                              ),
+                              const Icon(Icons.chat_bubble_outline_rounded, color: Colors.white, size: 18),
                               const SizedBox(width: 8),
-                              Text(
-                                'Ask Coach',
-                                style: GoogleFonts.barlow(
-                                  color: Colors.white,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
+                              Flexible(
+                                child: Text(
+                                  'Ask Coach',
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: GoogleFonts.barlow(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
                                 ),
                               ),
                             ],
@@ -927,36 +959,27 @@ class _TodayScreenState extends State<TodayScreen> {
                     const SizedBox(width: 12),
                   ],
                   Expanded(
-                    child: GestureDetector(
+                    child: AnimatedTap(
                       onTap: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(
-                            builder: (context) => EscalationScreen(patientId: _patientId),
-                          ),
+                          MaterialPageRoute(builder: (context) => EscalationScreen(patientId: _patientId)),
                         );
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(
-                              Icons.medical_services_rounded,
-                              color: Color(0xFF11998E),
-                              size: 18,
-                            ),
+                            const Icon(Icons.medical_services_rounded, color: Color(0xFF11998E), size: 18),
                             const SizedBox(width: 8),
-                            Text(
-                              'Care Team',
-                              style: GoogleFonts.barlow(
-                                color: const Color(0xFF11998E),
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
+                            Flexible(
+                              child: Text(
+                                'Care Team',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                                style: GoogleFonts.barlow(color: const Color(0xFF11998E), fontSize: 15, fontWeight: FontWeight.w600),
                               ),
                             ),
                           ],
@@ -973,115 +996,97 @@ class _TodayScreenState extends State<TodayScreen> {
     );
   }
 
-
-  /// Show profile menu - iPhone Health style
+  /// Show profile menu - a draggable sheet you can slide up/through, with
+  /// real, working entries (Settings pushes a real full settings screen;
+  /// Privacy/Help are wired in settings_screen.dart, not TODOs).
   void _showProfileMenu() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(20),
-            topRight: Radius.circular(20),
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.55,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
           ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Handle bar
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(2),
+          child: ListView(
+            controller: scrollController,
+            padding: EdgeInsets.zero,
+            children: [
+              Center(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.5), borderRadius: BorderRadius.circular(2)),
+                ),
               ),
-            ),
-            
-            const SizedBox(height: 24),
-            
-            // Profile header
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: const Color(0xFF007AFF),
-                borderRadius: BorderRadius.circular(40),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF007AFF).withValues(alpha: 0.3),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
+              const SizedBox(height: 24),
+              Center(
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: AppSettings().accentColor,
+                    borderRadius: BorderRadius.circular(40),
+                    boxShadow: [BoxShadow(color: AppSettings().accentColor.withValues(alpha: 0.3), blurRadius: 20, offset: const Offset(0, 8))],
                   ),
-                ],
+                  child: const Icon(Icons.person_rounded, color: Colors.white, size: 40),
+                ),
               ),
-              child: const Icon(
-                Icons.person_rounded,
-                color: Colors.white,
-                size: 40,
+              const SizedBox(height: 16),
+              Center(
+                child: Text('Health Profile', style: GoogleFonts.barlow(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
               ),
-            ),
-            
-            const SizedBox(height: 16),
-            
-            Text(
-              'Health Profile',
-              style: GoogleFonts.barlow(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+              const SizedBox(height: 8),
+              Center(
+                child: Text(
+                  'Manage your health data and preferences',
+                  style: GoogleFonts.barlow(fontSize: 15, fontWeight: FontWeight.w400, color: const Color(0xFF8E8E93)),
+                ),
               ),
-            ),
-            
-            const SizedBox(height: 8),
-            
-            Text(
-              'Manage your health data and preferences',
-              style: GoogleFonts.barlow(
-                fontSize: 15,
-                fontWeight: FontWeight.w400,
-                color: const Color(0xFF8E8E93),
+              const SizedBox(height: 32),
+              _buildProfileMenuItem(
+                icon: Icons.settings_rounded,
+                title: 'Settings',
+                subtitle: 'Appearance, data sources, and privacy',
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen(patientId: _patientId)));
+                },
               ),
-            ),
-            
-            const SizedBox(height: 32),
-            
-            // Menu options
-            _buildProfileMenuItem(
-              icon: Icons.settings_rounded,
-              title: 'Settings',
-              subtitle: 'App preferences and data sources',
-              onTap: () {
-                Navigator.pop(context);
-                // TODO: Navigate to settings
-              },
-            ),
-            
-            _buildProfileMenuItem(
-              icon: Icons.privacy_tip_rounded,
-              title: 'Privacy',
-              subtitle: 'Data sharing and permissions',
-              onTap: () {
-                Navigator.pop(context);
-                // TODO: Navigate to privacy settings
-              },
-            ),
-            
-            _buildProfileMenuItem(
-              icon: Icons.help_outline_rounded,
-              title: 'Help & Support',
-              subtitle: 'Get help with the app',
-              onTap: () {
-                Navigator.pop(context);
-                // TODO: Navigate to help
-              },
-            ),
-            
-            const SizedBox(height: 32),
-          ],
+              _buildProfileMenuItem(
+                icon: Icons.privacy_tip_rounded,
+                title: 'Privacy',
+                subtitle: 'What this app does and doesn\'t do with your data',
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const SettingsScreen(patientId: _patientId, initialSection: SettingsSection.privacy)),
+                  );
+                },
+              ),
+              _buildProfileMenuItem(
+                icon: Icons.help_outline_rounded,
+                title: 'Help & Support',
+                subtitle: 'How this app works, and what it is not',
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const SettingsScreen(patientId: _patientId, initialSection: SettingsSection.help)),
+                  );
+                },
+              ),
+              const SizedBox(height: 32),
+            ],
+          ),
         ),
       ),
     );
@@ -1102,46 +1107,21 @@ class _TodayScreenState extends State<TodayScreen> {
           children: [
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2C2C2E),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                icon,
-                color: const Color(0xFF007AFF),
-                size: 24,
-              ),
+              decoration: BoxDecoration(color: const Color(0xFF2C2C2E), borderRadius: BorderRadius.circular(12)),
+              child: Icon(icon, color: AppSettings().accentColor, size: 24),
             ),
             const SizedBox(width: 16),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
-                    style: GoogleFonts.barlow(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
+                  Text(title, style: GoogleFonts.barlow(fontSize: 17, fontWeight: FontWeight.w600, color: Colors.white)),
                   const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: GoogleFonts.barlow(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w400,
-                      color: const Color(0xFF8E8E93),
-                    ),
-                  ),
+                  Text(subtitle, style: GoogleFonts.barlow(fontSize: 15, fontWeight: FontWeight.w400, color: const Color(0xFF8E8E93))),
                 ],
               ),
             ),
-            const Icon(
-              Icons.chevron_right_rounded,
-              color: Color(0xFF8E8E93),
-              size: 20,
-            ),
+            const Icon(Icons.chevron_right_rounded, color: Color(0xFF8E8E93), size: 20),
           ],
         ),
       ),

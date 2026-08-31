@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'animated_tap.dart';
 
 /// Widget for displaying quick suggestion buttons in the chat
 class QuickSuggestions extends StatelessWidget {
@@ -68,7 +69,7 @@ class QuickSuggestions extends StatelessWidget {
   }
 
   Widget _buildSuggestionChip(String suggestion) {
-    return GestureDetector(
+    return AnimatedTap(
       onTap: () => onSuggestionTap(suggestion),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),

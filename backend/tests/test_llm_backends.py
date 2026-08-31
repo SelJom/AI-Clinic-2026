@@ -103,6 +103,79 @@ def test_ground_reply_ignores_numbers_without_a_matching_unit():
     assert reply == "Try to keep replies to 3-5 sentences and check in again in 2 days."
 
 
+def test_ground_reply_does_not_mangle_ordinary_words_starting_with_h():
+    """Regression test for a real live failure: the reversed "unit-before-
+    number" pattern added for "steps were 8500" had no word boundary after
+    the unit token, so "h" (the optional "ours?" suffix left unmatched)
+    matched the leading letter of ordinary words like "helpful", then
+    walked forward looking for any digit - which a markdown numbered list
+    always supplies. The digit was never grounded, so the whole span,
+    including unrelated prose, got deleted: "strategies that can be
+    helpful:\\n\\n1. **Prioritize Rest:**" became "strategies that can be a
+    specific figure I don't have handy. **Prioritize Rest:**"."""
+    ctx = _ctx()
+    reply = ground_reply(
+        "Here are a few strategies that can be helpful:\n\n1. **Prioritize Rest:** get enough sleep.\n"
+        "2. **Balanced Diet:** eat well.",
+        ctx,
+    )
+    assert "a specific figure I don't have handy" not in reply
+    assert "helpful" in reply
+    assert "1. **Prioritize Rest:**" in reply
+
+
+def test_ground_reply_still_catches_reversed_phrasing_with_word_boundary_fix():
+    """The word-boundary fix must not reintroduce the original bug it was
+    layered on top of - "steps were 8500" (real value 8247) must still be
+    caught."""
+    ctx = _ctx(recent_trend=["2026-08-30: resting HR 69 bpm, sleep 8.0h, steps 8247"])
+    reply = ground_reply("Your steps were 8500 today.", ctx)
+    assert "8500" not in reply
+    assert "a specific figure I don't have handy" in reply
+
+
+# --- ground_reply: hedged approximations get a looser tolerance ------------
+# Regression coverage for a real failure hit live during demo recording:
+# "you've already racked up over 8,000 steps" (real value 8247) was stripped
+# to "...racked up over a specific figure I don't have handy" mid-sentence -
+# a hedged, honestly-approximate figure was being held to the same
+# exact-match bar as a bare precise-looking claim.
+
+def test_ground_reply_keeps_hedged_approximate_figure():
+    ctx = _ctx(recent_trend=["2026-08-31: resting HR 69 bpm, sleep 7.8h, steps 8247"])
+    reply = ground_reply("You've already racked up over 8,000 steps today.", ctx)
+    assert "over 8,000 steps" in reply
+    assert "don't have handy" not in reply
+
+
+def test_ground_reply_keeps_hedged_approximate_figure_various_hedge_words():
+    ctx = _ctx(recent_trend=["2026-08-31: resting HR 69 bpm, sleep 7.8h, steps 8247"])
+    for phrase in ["nearly 8,000 steps", "about 8,200 steps", "close to 8,000 steps"]:
+        reply = ground_reply(f"You've done {phrase} today.", ctx)
+        assert phrase in reply, f"{phrase!r} should have survived grounding"
+
+
+def test_ground_reply_hedge_word_is_not_a_blanket_bypass():
+    """A hedge word loosens the tolerance, but not infinitely - a wildly
+    wrong figure must still be caught even when hedged."""
+    ctx = _ctx(recent_trend=["2026-08-31: resting HR 69 bpm, sleep 7.8h, steps 8247"])
+    reply = ground_reply("You've done nearly 20,000 steps today.", ctx)
+    assert "20,000" not in reply
+    assert "a specific figure I don't have handy" in reply
+
+
+def test_ground_reply_bare_precise_figure_still_uses_strict_tolerance():
+    """Without a hedge word, a precise-looking figure must still be held to
+    the tight tolerance even if it's in the same ballpark as the real value -
+    this is the exact shape of the original live hallucination
+    (test_ground_reply_catches_unit_before_number_phrasing) and must not
+    regress just because hedged phrasing is now more lenient."""
+    ctx = _ctx(recent_trend=["2026-08-31: resting HR 69 bpm, sleep 7.8h, steps 8247"])
+    reply = ground_reply("Your steps were 8500 today.", ctx)
+    assert "8500" not in reply
+    assert "a specific figure I don't have handy" in reply
+
+
 def test_ollama_backend_grounds_reply_before_returning(monkeypatch):
     fabricated = "Your average sleep was 6.0h and heart rate 200 bpm."
     fake_response = json.dumps({"response": fabricated}).encode("utf-8")

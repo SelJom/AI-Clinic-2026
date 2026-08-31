@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/backend_service.dart';
+import '../widgets/animated_tap.dart';
 import '../widgets/quick_suggestions.dart';
 
 /// AI Chat screen with modern interface inspired by ChatGPT/Claude
@@ -265,7 +267,22 @@ class _AIChatScreenState extends State<AIChatScreen> {
   }
 
   Widget _buildMessageBubble(ChatMessage message) {
-    return Padding(
+    // Fade + slide-up on appearance - runs once per bubble the first time
+    // it's built (new message added, or an existing one scrolling into a
+    // freshly-built ListView.builder item), giving messages a bit of life
+    // instead of just popping into place.
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(message),
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(offset: Offset(0, (1 - value) * 12), child: child),
+        );
+      },
+      child: Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -307,15 +324,26 @@ class _AIChatScreenState extends State<AIChatScreen> {
                             width: 1,
                           ),
                   ),
-                  child: Text(
-                    message.text,
-                    style: GoogleFonts.barlow(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w400,
-                      height: 1.4,
-                    ),
-                  ),
+                  child: message.isUser
+                      ? Text(
+                          message.text,
+                          style: GoogleFonts.barlow(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w400,
+                            height: 1.4,
+                          ),
+                        )
+                      : _TypewriterText(
+                          message: message,
+                          style: GoogleFonts.barlow(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w400,
+                            height: 1.4,
+                          ),
+                          onCharacterRevealed: _scrollToBottom,
+                        ),
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -334,6 +362,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
             _buildAvatar(true),
           ],
         ],
+      ),
       ),
     );
   }
@@ -456,7 +485,7 @@ class _AIChatScreenState extends State<AIChatScreen> {
               ),
             ),
             const SizedBox(width: 12),
-            GestureDetector(
+            AnimatedTap(
               onTap: _sendMessage,
               child: Container(
                 width: 44,
@@ -621,9 +650,86 @@ class ChatMessage {
   final bool isUser;
   final DateTime timestamp;
 
+  /// Set once the flowy reveal in [_TypewriterText] has fully played through
+  /// this message, so scrolling it back into view (ListView.builder can
+  /// rebuild off-screen items) shows the finished text instantly instead of
+  /// re-running the animation every time.
+  bool hasAnimated;
+
   ChatMessage({
     required this.text,
     required this.isUser,
     required this.timestamp,
+    this.hasAnimated = false,
   });
+}
+
+/// Reveals [message.text] a few characters at a time, like watching a reply
+/// get typed out live rather than popping onto the screen fully formed.
+/// Deliberately a post-hoc reveal of an already-complete reply rather than
+/// true token streaming from Ollama: the grounding safety net in
+/// llm_backends.py (ground_reply/ground_citations) needs the full response
+/// before it can safely check and rewrite any fabricated number - showing
+/// tokens as they arrive would mean briefly displaying text that might get
+/// silently corrected a moment later, which defeats the point of grounding
+/// the reply before the patient ever sees it.
+class _TypewriterText extends StatefulWidget {
+  final ChatMessage message;
+  final TextStyle style;
+  final VoidCallback? onCharacterRevealed;
+
+  const _TypewriterText({
+    required this.message,
+    required this.style,
+    this.onCharacterRevealed,
+  });
+
+  @override
+  State<_TypewriterText> createState() => _TypewriterTextState();
+}
+
+class _TypewriterTextState extends State<_TypewriterText> {
+  late int _charCount;
+  Timer? _timer;
+
+  static const _tick = Duration(milliseconds: 18);
+  static const _charsPerTick = 2;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.message.hasAnimated || widget.message.text.isEmpty) {
+      _charCount = widget.message.text.length;
+    } else {
+      _charCount = 0;
+      _timer = Timer.periodic(_tick, _onTick);
+    }
+  }
+
+  void _onTick(Timer timer) {
+    if (!mounted) {
+      timer.cancel();
+      return;
+    }
+    final total = widget.message.text.length;
+    setState(() {
+      _charCount = (_charCount + _charsPerTick).clamp(0, total);
+    });
+    widget.onCharacterRevealed?.call();
+    if (_charCount >= total) {
+      timer.cancel();
+      widget.message.hasAnimated = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(widget.message.text.substring(0, _charCount), style: widget.style);
+  }
 }

@@ -49,6 +49,15 @@ dependencies:
   # is transmitted by this app itself.
   share_plus: ^10.1.4
 
+  # Charts for the trend/history screen - pure Dart, no native platform
+  # dependency, so it works identically on web/desktop/mobile.
+  fl_chart: ^0.69.0
+
+  # Local persistence for real app settings (theme, accent color, the
+  # "use Samsung Health data" override) - per-device only, never sent
+  # anywhere, consistent with the rest of the app's local-first design.
+  shared_preferences: ^2.3.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

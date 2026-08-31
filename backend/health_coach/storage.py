@@ -35,12 +35,15 @@ CREATE TABLE IF NOT EXISTS daily_features (
     sleep_hours REAL,
     steps INTEGER,
     fatigue_score REAL,
+    calories REAL,
     hr_baseline REAL,
     hr_zscore REAL,
     sleep_baseline REAL,
     sleep_zscore REAL,
     steps_baseline REAL,
     steps_zscore REAL,
+    calories_baseline REAL,
+    calories_zscore REAL,
     PRIMARY KEY (patient_id, day)
 );
 
@@ -74,9 +77,29 @@ def connect(db_path: Path | None = None):
         conn.close()
 
 
+# New columns added to daily_features after this table already existed in
+# real running databases (this project's own local.db included) - a bare
+# "CREATE TABLE IF NOT EXISTS" is a no-op against an existing table, so new
+# columns need an explicit, idempotent migration rather than just editing
+# SCHEMA above (which only helps brand-new databases).
+_DAILY_FEATURES_MIGRATIONS = [
+    ("calories", "REAL"),
+    ("calories_baseline", "REAL"),
+    ("calories_zscore", "REAL"),
+]
+
+
+def _migrate_daily_features_columns(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(daily_features)")}
+    for column, coltype in _DAILY_FEATURES_MIGRATIONS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE daily_features ADD COLUMN {column} {coltype}")
+
+
 def init_db(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate_daily_features_columns(conn)
 
 
 def save_samples(samples: list[WearableSample], db_path: Path | None = None) -> None:
@@ -121,21 +144,24 @@ def save_daily_features(features: DailyFeatures, db_path: Path | None = None) ->
         conn.execute(
             """
             INSERT INTO daily_features (
-                patient_id, day, resting_hr, sleep_hours, steps, fatigue_score,
+                patient_id, day, resting_hr, sleep_hours, steps, fatigue_score, calories,
                 hr_baseline, hr_zscore, sleep_baseline, sleep_zscore,
-                steps_baseline, steps_zscore
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                steps_baseline, steps_zscore, calories_baseline, calories_zscore
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (patient_id, day) DO UPDATE SET
                 resting_hr = excluded.resting_hr,
                 sleep_hours = excluded.sleep_hours,
                 steps = excluded.steps,
                 fatigue_score = excluded.fatigue_score,
+                calories = excluded.calories,
                 hr_baseline = excluded.hr_baseline,
                 hr_zscore = excluded.hr_zscore,
                 sleep_baseline = excluded.sleep_baseline,
                 sleep_zscore = excluded.sleep_zscore,
                 steps_baseline = excluded.steps_baseline,
-                steps_zscore = excluded.steps_zscore
+                steps_zscore = excluded.steps_zscore,
+                calories_baseline = excluded.calories_baseline,
+                calories_zscore = excluded.calories_zscore
             """,
             (
                 features.patient_id,
@@ -144,12 +170,15 @@ def save_daily_features(features: DailyFeatures, db_path: Path | None = None) ->
                 features.sleep_hours,
                 features.steps,
                 features.fatigue_score,
+                features.calories,
                 features.hr_baseline,
                 features.hr_zscore,
                 features.sleep_baseline,
                 features.sleep_zscore,
                 features.steps_baseline,
                 features.steps_zscore,
+                features.calories_baseline,
+                features.calories_zscore,
             ),
         )
 
@@ -172,12 +201,15 @@ def load_recent_daily_features(
             sleep_hours=r["sleep_hours"],
             steps=r["steps"],
             fatigue_score=r["fatigue_score"],
+            calories=r["calories"],
             hr_baseline=r["hr_baseline"],
             hr_zscore=r["hr_zscore"],
             sleep_baseline=r["sleep_baseline"],
             sleep_zscore=r["sleep_zscore"],
             steps_baseline=r["steps_baseline"],
             steps_zscore=r["steps_zscore"],
+            calories_baseline=r["calories_baseline"],
+            calories_zscore=r["calories_zscore"],
         )
         for r in rows
     ]

@@ -58,6 +58,7 @@
 		<string>HKQuantityTypeIdentifierStepCount</string>
 		<string>HKQuantityTypeIdentifierRestingHeartRate</string>
 		<string>HKCategoryTypeIdentifierSleepAnalysis</string>
+		<string>HKQuantityTypeIdentifierActiveEnergyBurned</string>
 	</array>
 
 	<!-- App Transport Security blocks plain-HTTP by default. The local

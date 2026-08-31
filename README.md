@@ -51,8 +51,10 @@ directly in the terminal.
 | Escalation | `/escalation/{patient_id}` produces an actual clinician-facing summary - measurements vs. baseline, flagged rules with guideline citations, recent trend. **New**: the Flutter app now has a real `EscalationScreen` that shows it and a "share with your care team" button (native share sheet), closing the delivery gap that existed before |
 | Data rights | **New.** `DELETE /patient/{id}` and `GET /patient/{id}/export` (plus `cli.py delete-patient`/`export-patient`) actually implement right-to-erasure and right-to-access, not just a policy promise. See [`PRIVACY.md`](PRIVACY.md) for what's covered and what still isn't (consent flow, encryption at rest, retention policy, audit log) |
 | Python backend (`backend/`) | Working. Local pipeline: baselines → anomaly rules → guideline retrieval → coaching replies. The Flutter app now calls it directly over loopback |
-| Tests | 28 passing (`pytest -q` from `backend/`), up from 17 - added coverage for the `recent_trend` chat fix, the `TemplateBackend` fallback, and the `/summary` API endpoint, including a live regression test against a real local Ollama model (skipped automatically if none is running) |
-| Real AI verification | **Confirmed live, not assumed.** This environment has Ollama installed and running with `llama3.2` pulled (`config.py`'s default), so the LLM conversational layer was exercised directly, not just unit-tested against a fake: asked "what is the least I slept," it correctly answered from the real `recent_trend` data (5.1h) instead of the fabricated figure the same question used to produce before that fix. See `tests/test_coach.py`'s `test_ollama_backend_uses_real_trend_data_not_fabrication` |
+| Tests | Backend: 65 passing (`pytest -q` from `backend/`), up from 17. Flutter: 8 passing (`flutter test` from `health_coaching_app/`) covering the responsive shell and the trend screen, both added this round after the previous suite (one file, stale UI text, never actually run) was discovered broken the first time anyone ran `flutter test` |
+| Real AI verification | **Confirmed live, not assumed, repeatedly.** Ollama installed and running with `llama3.2` (`config.py`'s default) let the LLM layer be exercised directly rather than unit-tested against a fake. A 20-question live battery surfaced and fixed real failures beyond the original fabrication bug - see "Live-testing round 2" below |
+| Trend/history screen | **New.** `TrendScreen` + `GET /trend/{patient_id}` - resting HR/sleep/steps charted over time (via `fl_chart`), with the patient's own rolling baseline as a reference line. Previously this data only ever surfaced inside chat answers, never visually. Reachable from the chart icon in `TodayScreen`'s app bar |
+| Android build | **New.** Full Android toolchain (JDK 17, Android SDK cmdline-tools, platform 36, build-tools 28.0.3) set up and verified with a real `flutter build apk --debug` |
 
 Nothing here has touched a real patient's data. The synthetic generator in
 `backend/health_coach/ingestion.py` exists specifically so the pipeline can be
@@ -284,10 +286,15 @@ hardware (see "HealthService and Health Connect setup" above).
   `127.0.0.1`/`localhost`), or point `BackendService.baseUrl` in
   `lib/services/backend_service.dart` at `http://10.0.2.2:8765` (the
   emulator's alias for the host machine - also pre-allowed).
-- Physical device: `adb reverse` (Android) doesn't reach a remote machine;
-  you'd need the dev machine's LAN IP and to accept that the "loopback-only"
-  guarantee no longer holds once traffic leaves the phone. Not recommended
-  for anything beyond same-device testing.
+- **Physical Android device over USB: `adb reverse tcp:8765 tcp:8765` also
+  works here** - it's not emulator-only, it tunnels through the ADB/USB
+  connection itself regardless of device type, so the phone's own
+  `127.0.0.1:8765` reaches the backend with no LAN exposure and the
+  loopback-only guarantee genuinely holds (an earlier version of this
+  README claimed otherwise - that was simply wrong, never having been
+  checked against real hardware). A LAN IP is only needed for wireless
+  debugging without USB, which does trade away the loopback guarantee and
+  isn't necessary for same-machine development.
 
 ## Architecture (target)
 
@@ -370,17 +377,169 @@ question anymore. Narrow by design: it only matches this specific shape
 (metric + comparator + number), so anything phrased differently, or
 combined with a second question, still goes through the LLM path as before.
 
+**A fourth live failure, found the same way: invented dates in the
+*future*.** Asked "what have been my steps each day for the past seven
+days" with only one real recorded day on the books, the model listed that
+real day correctly, then invented six more calendar dates - several of them
+after "today" - labeled "no data available." Same fix shape again:
+`coach.py`'s `_try_answer_daily_breakdown_question()` detects "each
+day"/"daily"-style questions and lists only the real rows in `DailyFeatures`,
+never padding out to a requested day count with dates that don't exist.
+
+### Responsive UI, a trend/history screen, and a real Android build
+
+Running the app live at a wide desktop viewport (not just a phone-shaped
+one) surfaced two UX problems no amount of code review would have caught:
+opening the AI coach pushed a full-screen chat that hid the rest of the app
+entirely, and a single mobile-shaped column left most of a wide window
+looking empty. `lib/screens/home_shell.dart` is a `LayoutBuilder`-driven
+responsive root: below 900px it behaves exactly as before (full-screen push,
+verified unchanged with a screenshot at real iPhone dimensions); at or above
+900px, `TodayScreen` and an embedded `AIChatScreen` render side by side,
+always both visible. `AIChatScreen` gained an `embedded` mode (no
+Scaffold/AppBar/back button, since there's no pushed route to pop) for this.
+
+Also added: `TrendScreen` + `GET /trend/{patient_id}` - the recent-trend
+data that previously only ever surfaced inside chat answers is now charted
+(`fl_chart`) with the patient's own rolling baseline as a reference line,
+reachable from a chart icon in `TodayScreen`'s app bar.
+
+Writing widget tests for the responsive shell (the project's existing
+`test/widget_test.dart` was itself stale - asserting UI text from an earlier
+redesign that no longer existed anywhere, and had evidently never actually
+been run) surfaced two real layout bugs at real phone width (390px): a
+horizontal overflow in the "Ask Coach"/"Care Team" button row and a vertical
+overflow in the compact metric cards, both from `Text` widgets with no
+`maxLines`/`overflow` guard against a wider-than-expected font or string.
+Fixed by wrapping the affected text in `Flexible`/`maxLines: 1` so a tight
+fit degrades to truncation instead of a hard render overflow, regardless of
+what caused the width to be tighter than expected.
+
+Finally, the Android toolchain that was missing all along got actually set
+up - JDK 17, Android SDK cmdline-tools, platform 36, build-tools 28.0.3 -
+and a real `app-debug.apk` now builds successfully via `flutter build apk
+--debug`. Worth being precise about what that does and doesn't prove:
+`flutter doctor` reported the Android toolchain as fully green *before* this
+actually worked - the real build then failed three separate times in a row
+on a version cascade `flutter doctor` never surfaced (Gradle 8.12 too old,
+then the Android Gradle Plugin 8.9.1 too old, then Kotlin 2.1.0 too old,
+each only discovered by the next failure after fixing the last). Bumped to
+Gradle 8.14, AGP 8.11.1, and Kotlin 2.2.20 - deliberately staying below AGP
+9.x, which the build's own warning flagged as requiring a build.gradle.kts
+rewrite this project doesn't have. A clean compile is real progress, but it
+is not the same claim as "verified on a physical device with real Samsung
+Health data" - that still requires the device-specific steps only the
+person holding the phone can do (enabling USB debugging, granting Health
+Connect permissions, confirming Samsung Health actually syncs to Health
+Connect), and hasn't happened yet.
+
+### Running live on real hardware surfaced a fourth deterministic-bypass gap, and prompted a model upgrade
+
+Once the app was actually running on a real phone (over `adb reverse` via
+USB, after wireless debugging pairing turned out flakier than expected on
+that particular device), a real question exposed a real bug: "what's my
+average step per day amount in the past 7 days" contains the phrase "per
+day", which matched `_try_answer_daily_breakdown_question`'s trigger before
+`_try_answer_windowed_average_question` existed - so the actual ask (a
+7-day-windowed average) was silently ignored in favor of dumping all 13 raw
+days on record. Fixed by adding a dedicated windowed-average handler,
+checked before the daily-breakdown dump, that both recognizes "average"
+phrasing and - when a day count is named - slices to the real most-recent N
+rows rather than the fixed-size trend window computed once for the whole
+conversation. Verified live: the same question now returns "your average
+steps was 9894" (the correct 7-day figure), through the real chat pipeline
+running against the real backend the phone was already connected to.
+
+Also swapped the default Ollama model from `llama3.2` (3B) to `qwen2.5:14b`
+after live testing on real hardware (an RTX 5070 Ti, 16GB VRAM) made the
+smaller model's instruction-following limits repeatedly visible in
+practice, not just in theory. Worth being honest about what this does and
+doesn't change: it's a real capability upgrade, but the deterministic
+bypasses and grounding checks earlier in this document exist *because* no
+model size fully eliminates small-sample hallucination risk - they still
+matter with the larger model, and stay in place regardless of which model
+`HEALTH_COACH_OLLAMA_MODEL` points at.
+
+**The very first live message sent to `qwen2.5:14b` immediately found a
+real bug in the "steps were 8500" fix from earlier this session.** Asked an
+open-ended question, the reply came back as "...strategies that can be a
+specific figure I don't have handy. **Prioritize Rest:**..." - a
+grammatically broken sentence with a chunk of ordinary prose deleted mid-
+paragraph. Root cause: the bidirectional "unit-before-number" pattern added
+for "steps were 8500" had no word boundary after the unit token in its
+reversed alternative, so "h" (the optional "ours?" suffix left unmatched)
+matched the leading letter of any word starting with h - "helpful", "here",
+"have" - and then scanned up to 15 characters forward for any digit, which
+a markdown numbered list ("1. **Prioritize Rest:**") always supplies. That
+digit was never grounded, so `ground_reply` deleted the entire span,
+unrelated prose included. Fixed with an explicit `\b` after the unit token
+(only a complete "h"/"hours"/"bpm"/"steps" word can start the reversed
+match now) and a tighter 8-character gap. Re-verified live with the exact
+same question - clean output, numbered list intact - and confirmed the
+original "steps were 8500" catch this pattern exists for still works.
+
+### Calories, per-metric history with daily/weekly/monthly rollups, and an honest ECG answer
+
+Requested after seeing the app running live: tap any metric card to see its
+history, sortable daily/weekly/monthly; add calories if meaningful; add ECG
+if feasible.
+
+**Calories**: added end-to-end - a new `SignalType.CALORIES` signal,
+`DailyFeatures.calories`/`calories_baseline`/`calories_zscore`, a Health
+Connect/HealthKit read (`ACTIVE_ENERGY_BURNED` /
+`HKQuantityTypeIdentifierActiveEnergyBurned`, added to both platforms'
+manifests), and a new "Calories" card on the Summary screen. This is a real
+schema change to a table (`daily_features`) that already had rows in the
+live running database - handled with an idempotent `ALTER TABLE` migration
+in `storage.init_db()` (a bare `CREATE TABLE IF NOT EXISTS` is a no-op
+against an existing table, so new columns need their own migration path),
+verified against the real database this session had already been writing
+to, not just a fresh test database.
+
+**ECG: deliberately not implemented, and not faked.** Android's Health
+Connect - what `HealthService` reads through - has no ECG/waveform record
+type in its public API at all; Samsung's ECG classification (via Galaxy
+Watch) is only reachable through Samsung's own proprietary Health SDK, which
+the `health` Flutter package doesn't wrap and which Health Connect doesn't
+expose to third-party apps. Building a fake ECG card that always shows
+placeholder data would violate this project's own core principle
+("`ground_reply`... never state a number that doesn't come directly from
+the trend data") applied to the UI layer instead of the chat layer. iOS
+HealthKit does have `HKElectrocardiogramType`, but it requires a distinct,
+Apple-gated entitlement and is unverifiable in a project that has no
+functioning iOS build path at all in this environment. Both left out
+honestly rather than half-built.
+
+**Per-metric history with daily/weekly/monthly sorting**: new
+`lib/screens/metric_history_screen.dart`, reached by tapping any of the
+four Summary-screen cards. Backed by `GET /trend/{patient_id}?period=daily|
+weekly|monthly` and `features.aggregate_period()` - steps/calories are
+*summed* per week/month (total activity is the meaningful number), resting
+HR/sleep are *averaged* (summing a vital sign across a week means nothing).
+`period_start`/`period_end` are always the full calendar week/month, but
+`day_count` says exactly how many real days back that number - a week with
+2 real days out of 7 reports `day_count: 2`, never silently implying full
+coverage. The existing multi-metric `TrendScreen` (reached via the app
+bar's chart icon) kept its daily-only view and just gained a Calories
+chart; the new per-metric screen with period sorting is the addition.
+
 ## Known gaps / next steps
 
 What's left, now that the app↔backend bridge, real device reads, escalation
 delivery, and the guideline corpus are all in place:
 
-1. **Verify `HealthService` on a real device or emulator.** I rewrote it
-   carefully (fixed a real `configure()`/singleton bug, added the Android
-   manifest wiring Health Connect needs) but have never run `flutter
-   analyze` or the app itself against real hardware - this environment has
-   neither. This is the single highest-priority remaining item precisely
-   because it's unverified, not because the gap is conceptually large.
+1. **Verify `HealthService` against real Samsung Health data on a real
+   device.** `flutter analyze` is clean, the app now actually compiles for
+   Android (`flutter build apk --debug` succeeds, after fixing a
+   Gradle/AGP/Kotlin version cascade `flutter doctor` never flagged), and
+   `adb reverse` genuinely works for a USB-connected physical device (an
+   earlier version of this README wrongly claimed otherwise). What's left
+   is entirely on the device-holder's side: enable USB debugging, confirm
+   Samsung Health actually syncs Steps/Heart Rate/Sleep to Health Connect,
+   grant the app's Health Connect permission prompt, and confirm real
+   numbers appear instead of the simulated fallback (8247 steps/68.5 bpm/
+   7h45min). Still the single highest-priority remaining item, but the
+   scope of what's actually unverified has narrowed a lot this round.
 2. **Clinical review of the rule thresholds** in
    `backend/health_coach/rules.py` - they are prototype placeholders. The
    MIT-BIH and cardio-oncology-corpus work sanity-checked *magnitude*, but

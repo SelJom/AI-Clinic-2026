@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'screens/home_shell.dart';
+import 'services/app_settings.dart';
 
 /// Main entry point for the Health Coaching App
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Loaded before the first frame so there's no flash of the default accent
+  // before the persisted one applies.
+  await AppSettings().load();
   runApp(const HealthCoachingApp());
 }
 
@@ -14,13 +19,22 @@ class HealthCoachingApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Rebuilds whenever AppSettings changes (e.g. accent color picked in
+    // Settings) - real, app-wide, not just a decorative toggle.
+    return ListenableBuilder(
+      listenable: AppSettings(),
+      builder: (context, _) => _buildApp(AppSettings().accentColor),
+    );
+  }
+
+  Widget _buildApp(Color accentColor) {
     return MaterialApp(
       title: 'Health Coaching',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         // Dark mode Apple-inspired color scheme
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0A84FF), // Apple blue for dark mode
+          seedColor: accentColor,
           brightness: Brightness.dark,
           surface: const Color(0xFF1C1C1E), // iOS dark background
           onSurface: const Color(0xFFFFFFFF), // iOS dark text
@@ -77,7 +91,7 @@ class HealthCoachingApp extends StatelessWidget {
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             elevation: 0,
-            backgroundColor: const Color(0xFF0A84FF),
+            backgroundColor: accentColor,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
             shape: RoundedRectangleBorder(

@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from . import config
 
@@ -23,8 +24,43 @@ class CoachContext:
 
 
 SYSTEM_PROMPT = (
-    "You are a supportive, empathetic digital health coach for a cancer patient. "
-    "You are NOT a doctor and must never present yourself as one. "
+    "You are a friendly health coach who texts with a cancer patient you know "
+    "well - warm and human, like a knowledgeable friend, not a hospital "
+    "pamphlet or a customer-support bot. Write the way people actually talk: "
+    "short sentences, contractions, no corporate hedging ('I understand that "
+    "you...', 'It's important to note...', 'Please don't hesitate to...'). "
+    "Most replies should be 1-3 sentences, like a real text message - only go "
+    "longer when you're genuinely walking through a breakdown or an "
+    "explanation they asked for. Never open with a restatement of their "
+    "question and never close with a generic 'How can I help you today?' or "
+    "'Let me know if you have questions' - only ask a follow-up when it "
+    "actually fits, and phrase it differently each time, the way a person "
+    "would, not a script. An emoji here and there is fine when it actually "
+    "fits the moment (a 👍 acknowledging good news, a 💤 talking about sleep) "
+    "- but most replies shouldn't have one at all, and never more than one. "
+    "You are NOT a doctor and must never present yourself as one.\n\n"
+    "Every number below comes straight off this patient's own phone (Health "
+    "Connect / Samsung Health, synced automatically) - nobody 'told' you "
+    "anything, you're just reading their own device data back to them. If "
+    "they ask what data you're using, where a figure came from, or ask you "
+    "to show them the numbers, just tell them plainly and specifically - "
+    "e.g. 'Sure - your resting HR averaged 74 bpm this week, sleep was "
+    "around 7.2h a night.' It's their own data about their own body; there "
+    "is no privacy reason to be cagey with the person it belongs to, and "
+    "dodging the question just reads as evasive. Being vague or defensive "
+    "earlier in the conversation is not a reason to keep being vague later - "
+    "answer each question about their own data on its own merits.\n\n"
+    "You do NOT have this patient's diagnosis, medical history, or any "
+    "clinical record - only the day-to-day activity/heart-rate/sleep/calorie "
+    "numbers listed below. Never confirm, deny, or describe their diagnosis "
+    "or medical history, even if they ask directly or seem to assume you "
+    "know it - that is not something you can see. If it comes up, say so "
+    "plainly ('I don't actually have your diagnosis on file - I just see "
+    "your activity, sleep, and heart-rate numbers') rather than inventing an "
+    "answer either way, then gently bring it back to what you do have. The "
+    "one thing to redirect to their care team is anything that needs an "
+    "actual diagnosis, a medication decision, or clinical judgment you're "
+    "not qualified to give.\n\n"
     "Ground every piece of advice in the structured data, recent trend, and "
     "guideline excerpts you are given below; do not invent clinical facts. "
     "The 'Recent daily trend' section below lists this patient's real "
@@ -48,9 +84,9 @@ SYSTEM_PROMPT = (
     "(e.g. note the concern and, if it says ESCALATE, recommend contacting "
     "the care team) - never call a flagged day normal, fine, or nothing to "
     "worry about, even if the raw number alone might look unremarkable to "
-    "you. Keep replies short (3-5 sentences), warm, and non-alarmist. "
-    "If escalate is true, clearly and calmly tell the patient to contact their "
-    "care team, and explain briefly why."
+    "you. Stay non-alarmist even while being direct about a flagged day. "
+    "If escalate is true, clearly and calmly tell the patient to contact "
+    "their care team, and explain briefly why."
 )
 
 
@@ -59,13 +95,45 @@ SYSTEM_PROMPT = (
 # of number that was actually observed to get fabricated. Bidirectional:
 # observed live, "steps were 8500" (unit-before-number) slipped through
 # a number-then-unit-only pattern that only caught "8500 steps".
+#
+# Second live bug in this same bidirectional fix: the first version had no
+# \b after the unit token in the reversed alternative, so "h" (from
+# "h(?:ours?)?" with the optional suffix unmatched) matched the leading "h"
+# of ANY word - "helpful", "here", "have" - and then happily walked up to
+# 15 characters forward looking for a digit, which a markdown list ("1.
+# Prioritize Rest") always supplies. That digit is never grounded, so the
+# whole span - including unrelated prose - got deleted and replaced,
+# producing "strategies that can be a specific figure I don't have handy."
+# mid-sentence. Fixed with an explicit \b after the unit token (so only a
+# complete "h"/"hours" word can start the reversed match) and a much
+# shorter gap (8 chars, enough for " were " but not a whole clause).
 _UNIT_PATTERNS: dict[str, re.Pattern[str]] = {
-    "bpm": re.compile(r"\d+(?:\.\d+)?\s*bpm|\bbpm\D{0,15}?\d+(?:\.\d+)?", re.IGNORECASE),
-    "h": re.compile(r"\d+(?:\.\d+)?\s*h(?:ours?)?\b|\bh(?:ours?)?\D{0,15}?\d+(?:\.\d+)?", re.IGNORECASE),
-    "steps": re.compile(r"\d+(?:,\d{3})*\s*steps?\b|\bsteps?\D{0,15}?\d+(?:,\d{3})*", re.IGNORECASE),
+    "bpm": re.compile(r"\d+(?:\.\d+)?\s*bpm|\bbpm\b\D{0,8}?\d+(?:\.\d+)?", re.IGNORECASE),
+    "h": re.compile(r"\d+(?:\.\d+)?\s*h(?:ours?)?\b|\bh(?:ours?)?\b\D{0,8}?\d+(?:\.\d+)?", re.IGNORECASE),
+    "steps": re.compile(r"\d+(?:,\d{3})*\s*steps?\b|\bsteps?\b\D{0,8}?\d+(?:,\d{3})*", re.IGNORECASE),
 }
 _NUMBER_RE = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
 _TOLERANCE = {"bpm": 0.6, "h": 0.06, "steps": 0.6}
+
+# Observed live during demo recording: "you've already racked up over 8,000
+# steps" (real value 8247) got stripped to "...racked up over a specific
+# figure I don't have handy" - _TOLERANCE above is intentionally exact-only,
+# which is right for a bare, precise-looking claim ("your steps were 8500"
+# when real value is 8247 - a genuine live-observed hallucination, see
+# test_ground_reply_catches_unit_before_number_phrasing) but wrong for a
+# figure the model is explicitly hedging as approximate. The two need
+# different tolerances, and the only reliable signal to tell them apart is
+# whether a hedge word sits immediately before the number - not the size of
+# the gap, since both examples above happen to be off by roughly the same
+# ~250. A wide-open blanket tolerance would silently let a precise-looking
+# wrong number back in (regressing the exact bug those tests exist for);
+# gating the wider tolerance on an explicit hedge word means it only ever
+# loosens for numbers the model itself is already flagging as inexact.
+_HEDGE_RE = re.compile(
+    r"\b(over|nearly|about|around|roughly|almost|at least|more than|just over|just under|close to)\s*$",
+    re.IGNORECASE,
+)
+_LOOSE_TOLERANCE = {"bpm": 5.0, "h": 0.5, "steps": 1000.0}
 
 
 def _numbers_in(text: str, unit: str) -> set[float]:
@@ -116,7 +184,15 @@ def ground_reply(reply: str, context: CoachContext) -> str:
             if not num_match:
                 return match.group(0)
             value = float(num_match.group(0).replace(",", ""))
-            if any(abs(value - g) <= _TOLERANCE[unit] for g in grounded[unit]):
+            # Look at the text immediately before wherever the digits
+            # actually start (not before the whole match, which for the
+            # unit-before-number phrasing - "steps were 8500" - begins at
+            # the unit word, several characters ahead of the number and the
+            # hedge word alike) so both match directions are covered.
+            num_start = match.start() + num_match.start()
+            before = reply[max(0, num_start - 15):num_start]
+            tolerance = _LOOSE_TOLERANCE[unit] if _HEDGE_RE.search(before) else _TOLERANCE[unit]
+            if any(abs(value - g) <= tolerance for g in grounded[unit]):
                 return match.group(0)
             return "a specific figure I don't have handy"
 
@@ -266,8 +342,13 @@ class OllamaBackend(ConversationBackend):
             "- none computed for this period (the daily trend below may still have real "
             "data for single-day lookups even when this section is empty)"
         )
+        now = datetime.now()
         return (
             f"{SYSTEM_PROMPT}\n\n"
+            f"Right now it's {now.strftime('%A %Y-%m-%d, %H:%M')}. If you're commenting on "
+            f"today specifically and it's still morning or afternoon, remember there's still "
+            f"time left in the day - don't write today off as if it's already over (e.g. don't "
+            f"suggest 'tomorrow' for something that could still happen later today).\n\n"
             f"Risk level: {context.risk_level}\n"
             f"Escalate: {context.escalate}\n"
             f"Today's findings:\n{recs}\n\n"
